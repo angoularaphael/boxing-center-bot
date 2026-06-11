@@ -89,6 +89,65 @@ async function fetchManagersForBroadcast(channel = 'email') {
     return data || [];
 }
 
+async function fetchPromoteurs({ search = '', contactType = '' } = {}) {
+    const sb = getSupabase();
+    let query = sb.from('promoteurs').select('*').order('nom', { ascending: true });
+
+    if (search) {
+        query = query.ilike('nom', `%${search}%`);
+    }
+    if (contactType && contactType !== 'all') {
+        query = query.eq('contact_type', contactType);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+}
+
+async function fetchPromoteurById(id) {
+    const sb = getSupabase();
+    const { data, error } = await sb.from('promoteurs').select('*').eq('id', id).maybeSingle();
+    if (error) throw error;
+    return data;
+}
+
+async function fetchTestPromoteur() {
+    const sb = getSupabase();
+    const { data, error } = await sb.from('promoteurs').select('*').eq('is_test', true).limit(1).maybeSingle();
+    if (error) throw error;
+    return data;
+}
+
+async function fetchPromoteurStats() {
+    const sb = getSupabase();
+    const { data, error } = await sb.from('promoteurs').select('has_phone, has_email, contact_type');
+    if (error) throw error;
+    const rows = data || [];
+    return {
+        total: rows.length,
+        withPhone: rows.filter((r) => r.has_phone).length,
+        withEmail: rows.filter((r) => r.has_email).length,
+        both: rows.filter((r) => r.contact_type === 'both').length,
+        phoneOnly: rows.filter((r) => r.contact_type === 'phone_only').length,
+        emailOnly: rows.filter((r) => r.contact_type === 'email_only').length,
+        none: rows.filter((r) => r.contact_type === 'none').length,
+    };
+}
+
+async function fetchPromoteursForBroadcast(channel = 'email') {
+    const sb = getSupabase();
+    let query = sb.from('promoteurs').select('*').order('nom', { ascending: true });
+    if (channel === 'email') {
+        query = query.eq('has_email', true);
+    } else if (channel === 'whatsapp' || channel === 'phone') {
+        query = query.eq('has_phone', true);
+    }
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+}
+
 async function fetchManagersWithEmail(limit = 10) {
     const sb = getSupabase();
     const { data, error } = await sb
@@ -179,6 +238,11 @@ module.exports = {
     fetchManagersWithPhone,
     fetchManagersWithEmail,
     fetchManagersForBroadcast,
+    fetchPromoteurs,
+    fetchPromoteurById,
+    fetchTestPromoteur,
+    fetchPromoteurStats,
+    fetchPromoteursForBroadcast,
     fetchUnreadInbound,
     fetchInboundMessages,
     fetchOutboundMessages,

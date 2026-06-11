@@ -212,7 +212,15 @@ async function sendViaRestApi({ to, subject, html, text }) {
     });
 }
 
-async function sendBrevoEmail({ to, subject, html, text, managerId = null, recipientName = '' }) {
+async function sendBrevoEmail({
+    to,
+    subject,
+    html,
+    text,
+    managerId = null,
+    promoterId = null,
+    recipientName = '',
+}) {
     if (!isEmailConfigured()) {
         throw new Error(
             'Brevo non configuré — BREVO_SMTP_LOGIN + BREVO_SMTP_KEY (SMTP) ou BREVO_API_KEY API (xkeysib…)'
@@ -230,7 +238,8 @@ async function sendBrevoEmail({ to, subject, html, text, managerId = null, recip
     });
 
     const record = await createOutboundMessage({
-        manager_id: managerId,
+        manager_id: promoterId ? null : managerId,
+        promoter_id: promoterId || null,
         channel: 'email',
         recipient: to,
         subject: mailSubject,
