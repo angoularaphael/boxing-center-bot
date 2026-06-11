@@ -7,6 +7,7 @@ const {
 const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
 const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'boxingcenter31@gmail.com';
 const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'Boxing Center';
+const RECEPTION_EMAIL = process.env.RECEPTION_EMAIL || process.env.BREVO_REPLY_TO || 'angoularaphael05@gmail.com';
 
 function escapeHtml(str) {
     return String(str || '')
@@ -47,7 +48,7 @@ function buildEmailHtml({ subject = '', body = '', recipientName = '' }) {
           <td style="padding:24px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;">
             <p style="margin:0;font-size:12px;color:#64748b;line-height:1.6;">
               Cet email vous a été envoyé par <strong style="color:#0f172a;">Boxing Center</strong>.<br>
-              Répondez directement à cet email pour nous contacter.
+              Répondez à ${escapeHtml(RECEPTION_EMAIL)} pour nous contacter.
             </p>
           </td>
         </tr>
@@ -80,6 +81,7 @@ async function sendBrevoEmail({ to, subject, html, text, managerId = null }) {
         const payload = {
             sender: { name: BREVO_SENDER_NAME, email: BREVO_SENDER_EMAIL },
             to: [{ email: to }],
+            replyTo: { email: RECEPTION_EMAIL, name: BREVO_SENDER_NAME },
             subject: subject || 'Message Boxing Center',
             htmlContent: html || `<p>${bodyText.replace(/\n/g, '<br>')}</p>`,
             textContent: bodyText,

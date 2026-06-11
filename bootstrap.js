@@ -1,6 +1,9 @@
 /**
  * Boxing Center — Bootstrap Bothosting (comme NYC Cookies)
  * Renommez en index.js à la racine du projet Bothosting.
+ *
+ * Important : on lance le bot en processus principal (pas PM2 en arrière-plan),
+ * sinon Pterodactyl marque le serveur « offline ».
  */
 const { execSync } = require('child_process');
 const fs = require('fs');
@@ -9,6 +12,7 @@ const path = require('path');
 const GITHUB_REPO_URL = process.env.BOT_GITHUB_REPO || 'https://github.com/angoularaphael/boxing-center-bot.git';
 const APP_DIR_NAME = process.env.BOT_APP_DIR || 'boxing-center-bot-app';
 const APP_DIR = path.join(__dirname, APP_DIR_NAME);
+const BOT_PORT = process.env.SERVER_PORT || process.env.PORT || '20042';
 
 const ENV_KEYS = [
     'PORT',
@@ -20,6 +24,8 @@ const ENV_KEYS = [
     'BREVO_API_KEY',
     'BREVO_SENDER_EMAIL',
     'BREVO_SENDER_NAME',
+    'RECEPTION_EMAIL',
+    'BREVO_REPLY_TO',
 ];
 
 console.log('=== BOXING CENTER BOT — BOTHOSTING ===');
@@ -30,8 +36,9 @@ try {
         let data = '';
         res.on('data', (c) => { data += c; });
         res.on('end', () => {
-            const port = process.env.PORT || '3002';
-            console.log(`\n🌍 URL BOT pour Vercel (NEXT_PUBLIC_WHATSAPP_BOT_URL) : http://${data.trim()}:${port}\n`);
+            console.log(`\n🌍 URL BOT pour Vercel (NEXT_PUBLIC_WHATSAPP_BOT_URL) :`);
+            console.log(`   http://us2.bot-hosting.net:${BOT_PORT}`);
+            console.log(`   (IP interne : http://${data.trim()}:${BOT_PORT})\n`);
         });
     }).on('error', () => {});
 } catch { /* ignore */ }
@@ -49,18 +56,24 @@ function runCommand(cmd, cwd = __dirname) {
 
 function buildEnv() {
     const lines = ['# Auto-generated bootstrap Boxing Center'];
+    const portLine = `PORT=${BOT_PORT}`;
+    lines.push(portLine);
+
     for (const key of ENV_KEYS) {
+        if (key === 'PORT') continue;
         const val = process.env[key];
         if (val != null && val !== '') {
             lines.push(/[\s#]/.test(val) ? `${key}="${String(val).replace(/"/g, '\\"')}"` : `${key}=${val}`);
         }
     }
-    if (!lines.some((l) => l.startsWith('PORT='))) lines.push('PORT=3002');
     if (!lines.some((l) => l.startsWith('BREVO_SENDER_EMAIL='))) {
         lines.push('BREVO_SENDER_EMAIL=boxingcenter31@gmail.com');
     }
     if (!lines.some((l) => l.startsWith('BREVO_SENDER_NAME='))) {
         lines.push('BREVO_SENDER_NAME=Boxing Center');
+    }
+    if (!lines.some((l) => l.startsWith('RECEPTION_EMAIL='))) {
+        lines.push('RECEPTION_EMAIL=angoularaphael05@gmail.com');
     }
     return `${lines.join('\n')}\n`;
 }
@@ -77,18 +90,9 @@ async function bootstrap() {
 
     if (!runCommand('npm install --omit=dev', APP_DIR)) process.exit(1);
 
-    let usePM2 = false;
-    try { execSync('pm2 -v', { stdio: 'ignore' }); usePM2 = true; } catch { /* */ }
-
-    if (usePM2) {
-        const eco = `module.exports = { apps: [{ name: 'boxing-center-bot', script: './index.js', cwd: ${JSON.stringify(APP_DIR)}, autorestart: true, max_memory_restart: '400M' }] };`;
-        fs.writeFileSync(path.join(APP_DIR, 'ecosystem.config.js'), eco, 'utf8');
-        runCommand('pm2 startOrRestart ecosystem.config.js', APP_DIR);
-        console.log('✅ Bot démarré (PM2)');
-    } else {
-        process.chdir(APP_DIR);
-        require('./index.js');
-    }
+    console.log('🚀 Démarrage du bot (processus principal — ne pas quitter)...');
+    process.chdir(APP_DIR);
+    require(path.join(APP_DIR, 'index.js'));
 }
 
 bootstrap();

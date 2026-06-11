@@ -56,8 +56,9 @@ if (!fs.existsSync(AUTH_DIR)) {
 const CONFIG_FILE = path.join(__dirname, 'bot_config.json');
 const MENU_LOGO_PATH = path.join(__dirname, 'assets', 'logo.png');
 const SITE_API_SECRET = process.env.SITE_API_SECRET || '';
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || process.env.BOXING_CENTER_SITE_URL || 'https://boxingcenter.fr/';
-const CONTACT_EMAIL = process.env.BREVO_SENDER_EMAIL || 'boxingcenter31@gmail.com';
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || process.env.BOXING_CENTER_SITE_URL || 'https://gestion-manager.vercel.app';
+const RECEPTION_EMAIL = process.env.RECEPTION_EMAIL || process.env.BREVO_REPLY_TO || 'angoularaphael05@gmail.com';
+const SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'boxingcenter31@gmail.com';
 const WA_MAX_LEN = 3800;
 
 function normalizePhone(input) {
@@ -191,6 +192,7 @@ function isSenderAuthorized(msg) {
 const BOT_COMMANDS = new Set([
     '.menu',
     '.guide', '.aide', '.help',
+    '.ping',
     '.numeros', '.phones',
     '.emails',
     '.nonlus', '.unread',
@@ -210,14 +212,28 @@ const COMMAND_REACTION = '🥊';
 
 function getMenuText() {
     return [
-        '🥊 *Boxing Center Bot*',
+        '🥊 *Boxing Center — Commandes*',
         '',
-        'Bienvenue sur la plateforme de messagerie Boxing Center.',
+        '*Général*',
+        '`.menu`',
+        '`.guide`',
+        '`.ping`',
         '',
-        `🌐 Site : ${SITE_URL}`,
-        `📧 Questions : ${CONTACT_EMAIL}`,
+        '*Managers*',
+        '`.numeros`',
+        '`.emails`',
+        '`.stats`',
+        '`.nonlus`',
         '',
-        'Tapez `.guide` pour la liste des commandes (admins).',
+        '*Administration*',
+        '`.authorise`',
+        '`.unauthorise`',
+        '',
+        `🌐 Console : ${SITE_URL}`,
+        `📧 Réception : ${RECEPTION_EMAIL}`,
+        `📤 Envoi : ${SENDER_EMAIL}`,
+        '',
+        'Tapez `.guide` pour le détail (admins).',
     ].join('\n');
 }
 
@@ -225,14 +241,29 @@ function getGuideText() {
     return [
         '📖 *Guide — Boxing Center Bot*',
         '',
-        '• `.menu` — Accueil + logo',
-        '• `.guide` — Ce guide',
+        '*Général*',
+        '• `.menu` — Liste des commandes (+ logo)',
+        '• `.guide` — Ce guide détaillé',
+        '• `.ping` — Tester la connexion du bot',
+        '',
+        '*Managers*',
         '• `.numeros` / `.phones` — Managers avec téléphone',
         '• `.emails` — Managers avec email',
+        '• `.stats` — Statistiques contacts',
         '• `.nonlus` / `.unread` — Messages WhatsApp non lus',
-        '• `.stats` — Statistiques contacts managers',
-        '• `.authorise NUMERO` — Autoriser un admin',
+        '',
+        '*Administration*',
+        '• `.authorise NUMERO` — Autoriser un admin WhatsApp',
         '• `.unauthorise NUMERO` — Retirer un admin',
+        '',
+        '*Console web*',
+        `• ${SITE_URL}`,
+        `• Emails managers via Brevo (${SENDER_EMAIL})`,
+        `• Réponses / contact : ${RECEPTION_EMAIL}`,
+        '',
+        '*Exemples*',
+        '`.authorise 33762641473`',
+        '`.stats`',
     ].join('\n');
 }
 
@@ -466,6 +497,13 @@ async function handleIncomingMessages(m) {
                     continue;
                 }
                 await sendGuide(sender);
+                continue;
+            }
+
+            if (cmd === '.ping') {
+                await sock.sendMessage(sender, {
+                    text: `🏓 Pong — Boxing Center Bot en ligne.\nConsole : ${SITE_URL}`,
+                });
                 continue;
             }
 
@@ -943,7 +981,7 @@ app.post('/api/send-to-managers', async (req, res) => {
     }
 });
 
-const PORT = process.env.PORT || 3002;
+const PORT = process.env.PORT || process.env.SERVER_PORT || 3002;
 app.listen(PORT, () => {
     console.log(`Boxing Center Bot — port ${PORT}`);
     console.log(`Site : ${SITE_URL}`);
