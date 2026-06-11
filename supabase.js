@@ -148,6 +148,73 @@ async function fetchPromoteursForBroadcast(channel = 'email') {
     return data || [];
 }
 
+async function fetchBoxeurs({ search = '', contactType = '', categorie = '' } = {}) {
+    const sb = getSupabase();
+    let query = sb.from('boxeurs').select('*').order('nom', { ascending: true });
+
+    if (search) {
+        query = query.ilike('nom', `%${search}%`);
+    }
+    if (contactType && contactType !== 'all') {
+        query = query.eq('contact_type', contactType);
+    }
+    if (categorie) {
+        query = query.eq('categorie', categorie);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+}
+
+async function fetchBoxeurById(id) {
+    const sb = getSupabase();
+    const { data, error } = await sb.from('boxeurs').select('*').eq('id', id).maybeSingle();
+    if (error) throw error;
+    return data;
+}
+
+async function fetchTestBoxeur() {
+    const sb = getSupabase();
+    const { data, error } = await sb.from('boxeurs').select('*').eq('is_test', true).limit(1).maybeSingle();
+    if (error) throw error;
+    return data;
+}
+
+async function fetchBoxeurStats() {
+    const sb = getSupabase();
+    const { data, error } = await sb.from('boxeurs').select('has_phone, has_email, contact_type, categorie');
+    if (error) throw error;
+    const rows = data || [];
+    return {
+        total: rows.length,
+        amateur: rows.filter((r) => r.categorie === 'amateur').length,
+        pro: rows.filter((r) => r.categorie === 'pro').length,
+        withPhone: rows.filter((r) => r.has_phone).length,
+        withEmail: rows.filter((r) => r.has_email).length,
+        both: rows.filter((r) => r.contact_type === 'both').length,
+        phoneOnly: rows.filter((r) => r.contact_type === 'phone_only').length,
+        emailOnly: rows.filter((r) => r.contact_type === 'email_only').length,
+        none: rows.filter((r) => r.contact_type === 'none').length,
+    };
+}
+
+async function fetchBoxeursForBroadcast(channel = 'email', categorie = '') {
+    const sb = getSupabase();
+    let query = sb.from('boxeurs').select('*').order('nom', { ascending: true });
+    if (channel === 'email') {
+        query = query.eq('has_email', true);
+    } else if (channel === 'whatsapp' || channel === 'phone') {
+        query = query.eq('has_phone', true);
+    }
+    if (categorie) {
+        query = query.eq('categorie', categorie);
+    }
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+}
+
 async function fetchManagersWithEmail(limit = 10) {
     const sb = getSupabase();
     const { data, error } = await sb
@@ -243,6 +310,11 @@ module.exports = {
     fetchTestPromoteur,
     fetchPromoteurStats,
     fetchPromoteursForBroadcast,
+    fetchBoxeurs,
+    fetchBoxeurById,
+    fetchTestBoxeur,
+    fetchBoxeurStats,
+    fetchBoxeursForBroadcast,
     fetchUnreadInbound,
     fetchInboundMessages,
     fetchOutboundMessages,

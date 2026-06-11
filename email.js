@@ -219,6 +219,7 @@ async function sendBrevoEmail({
     text,
     managerId = null,
     promoterId = null,
+    boxeurId = null,
     recipientName = '',
 }) {
     if (!isEmailConfigured()) {
@@ -238,8 +239,9 @@ async function sendBrevoEmail({
     });
 
     const record = await createOutboundMessage({
-        manager_id: promoterId ? null : managerId,
+        manager_id: (promoterId || boxeurId) ? null : managerId,
         promoter_id: promoterId || null,
+        boxeur_id: boxeurId || null,
         channel: 'email',
         recipient: to,
         subject: mailSubject,
