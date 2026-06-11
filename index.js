@@ -332,8 +332,8 @@ async function runTestEnvoi() {
     const email = (testMgr?.email || TEST_TARGET_EMAIL).trim().toLowerCase();
     const managerId = testMgr?.id || null;
     const name = testMgr?.nom || 'atangana';
-    const subject = 'Test Boxing Center';
-    const message = '🥊 Test d\'envoi Boxing Center — si vous recevez ce message, le canal fonctionne.';
+    const subject = 'Boxing Center';
+    const message = 'Message de Boxing Center — merci de confirmer la bonne réception de ce message.';
 
     const results = { whatsapp: '—', email: '—' };
 
@@ -1113,41 +1113,7 @@ app.post('/api/send-to-managers', async (req, res) => {
         const ctx = { message, subject, html, channels, results };
 
         if (fastBatch) {
-            const jobs = managers.map((mgr) => deliverToManager(mgr, ctx));
-            if (testOnly && channels.includes('email') && RECEPTION_EMAIL) {
-                const copyTo = RECEPTION_EMAIL.trim().toLowerCase();
-                jobs.push((async () => {
-                    try {
-                        const copyHtml = html || buildEmailHtml({
-                            subject: subject || 'Message Boxing Center',
-                            body: message,
-                            recipientName: 'Copie test',
-                        });
-                        await sendBrevoEmail({
-                            to: copyTo,
-                            subject: `[Copie test] ${subject || 'Message Boxing Center'}`,
-                            html: copyHtml,
-                            text: message,
-                            managerId: null,
-                            recipientName: 'Copie test',
-                        });
-                        results.email.sent++;
-                        results.destinations.push({
-                            channel: 'email',
-                            to: copyTo,
-                            manager: 'copie réception (test)',
-                        });
-                    } catch (err) {
-                        results.email.failed++;
-                        results.errors.push({
-                            manager: 'copie réception',
-                            channel: 'email',
-                            error: err.message,
-                        });
-                    }
-                })());
-            }
-            await Promise.all(jobs);
+            await Promise.all(managers.map((mgr) => deliverToManager(mgr, ctx)));
         } else {
             for (const mgr of managers) {
                 await deliverToManager(mgr, ctx);

@@ -1,10 +1,18 @@
 const axios = require('axios');
+const fs = require('fs');
 const nodemailer = require('nodemailer');
+const path = require('path');
 const {
     createOutboundMessage,
     updateOutboundMessage,
 } = require('./supabase');
-const { buildEmailHtml, buildEmailPlainText } = require('./brand');
+const {
+    buildEmailHtml,
+    buildEmailPlainText,
+    BOXING_CENTER_CONTACT_EMAIL,
+    LOGO_CID,
+    embedLogoInHtml,
+} = require('./brand');
 
 const BREVO_API_KEY = (process.env.BREVO_API_KEY || '').trim();
 const BREVO_SMTP_KEY = (
@@ -16,7 +24,13 @@ const BREVO_SMTP_HOST = process.env.BREVO_SMTP_HOST || 'smtp-relay.brevo.com';
 const BREVO_SMTP_PORT = parseInt(process.env.BREVO_SMTP_PORT || '587', 10);
 const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'suzinabot@gmail.com';
 const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'Boxing Center';
-const RECEPTION_EMAIL = process.env.RECEPTION_EMAIL || process.env.BREVO_REPLY_TO || 'angoularaphael05@gmail.com';
+const RECEPTION_EMAIL = (
+    process.env.RECEPTION_EMAIL ||
+    process.env.BREVO_REPLY_TO ||
+    BOXING_CENTER_CONTACT_EMAIL
+).trim();
+
+const LOGO_PATH = path.join(__dirname, 'assets', 'logo.png');
 
 function useSmtp() {
     return Boolean(BREVO_SMTP_KEY && BREVO_SMTP_LOGIN);
@@ -47,11 +61,47 @@ function getSmtpTransport() {
     return smtpTransport;
 }
 
+function getLogoAttachment() {
+    if (!fs.existsSync(LOGO_PATH)) return null;
+    return {
+        filename: 'logo.png',
+        path: LOGO_PATH,
+        cid: LOGO_CID,
+    };
+}
+
+function prepareOutboundMail({ subject, body, recipientName, html }) {
+    const mailSubject = subject || 'Message de Boxing Center';
+    const finalHtml = embedLogoInHtml(
+        html ||
+            buildEmailHtml({
+                subject: mailSubject,
+                body: body || '',
+                recipientName,
+                showSubjectInBody: false,
+                embedded: Boolean(getLogoAttachment()),
+            })
+    );
+    const bodyText = buildEmailPlainText({
+        subject: mailSubject,
+        body: body || '',
+        recipientName,
+    });
+    const logo = getLogoAttachment();
+    return {
+        mailSubject,
+        finalHtml,
+        bodyText,
+        attachments: logo ? [logo] : [],
+    };
+}
+
 async function verifyEmailSetup() {
     const base = {
         senderEmail: BREVO_SENDER_EMAIL,
         senderName: BREVO_SENDER_NAME,
         receptionEmail: RECEPTION_EMAIL,
+        contactEmail: BOXING_CENTER_CONTACT_EMAIL,
         transport: useSmtp() ? 'smtp' : useRestApi() ? 'api' : null,
     };
 
@@ -122,26 +172,34 @@ async function verifyEmailSetup() {
     };
 }
 
-async function sendViaSmtp({ to, subject, html, text }) {
+async function sendViaSmtp({ to, subject, html, text, attachments }) {
     await getSmtpTransport().sendMail({
         from: `"${BREVO_SENDER_NAME}" <${BREVO_SENDER_EMAIL}>`,
         to,
-        replyTo: RECEPTION_EMAIL,
-        subject: subject || 'Message Boxing Center',
-        html: html || `<p>${String(text || '').replace(/\n/g, '<br>')}</p>`,
-        text: text || '',
+        replyTo: `"${BREVO_SENDER_NAME}" <${BOXING_CENTER_CONTACT_EMAIL}>`,
+        subject,
+        html,
+        text,
+        attachments,
+        headers: {
+            'X-Mailer': 'Boxing Center',
+            Importance: 'normal',
+        },
+        messageId: `<${Date.now()}.${Math.random().toString(36).slice(2)}@boxingcenter.fr>`,
     });
 }
 
 async function sendViaRestApi({ to, subject, html, text }) {
-    const bodyText = text || (html ? html.replace(/<[^>]+>/g, '') : '');
     const payload = {
         sender: { name: BREVO_SENDER_NAME, email: BREVO_SENDER_EMAIL },
         to: [{ email: to }],
-        replyTo: { email: RECEPTION_EMAIL, name: BREVO_SENDER_NAME },
-        subject: subject || 'Message Boxing Center',
-        htmlContent: html || `<p>${bodyText.replace(/\n/g, '<br>')}</p>`,
-        textContent: bodyText,
+        replyTo: { email: BOXING_CENTER_CONTACT_EMAIL, name: BREVO_SENDER_NAME },
+        subject,
+        htmlContent: html,
+        textContent: text,
+        headers: {
+            'X-Mailin-custom': 'boxing-center-transactional',
+        },
     };
 
     await axios.post('https://api.brevo.com/v3/smtp/email', payload, {
@@ -164,19 +222,13 @@ async function sendBrevoEmail({ to, subject, html, text, managerId = null, recip
         throw new Error('Destinataire email requis');
     }
 
-    const mailSubject = subject || 'Message Boxing Center';
-    const finalHtml =
-        html ||
-        buildEmailHtml({
-            subject: mailSubject,
-            body: text || '',
-            recipientName,
-        });
-    const bodyText = buildEmailPlainText({
-        subject: mailSubject,
+    const { mailSubject, finalHtml, bodyText, attachments } = prepareOutboundMail({
+        subject,
         body: text || '',
         recipientName,
+        html,
     });
+
     const record = await createOutboundMessage({
         manager_id: managerId,
         channel: 'email',
@@ -188,9 +240,20 @@ async function sendBrevoEmail({ to, subject, html, text, managerId = null, recip
 
     try {
         if (useSmtp()) {
-            await sendViaSmtp({ to, subject: mailSubject, html: finalHtml, text: bodyText });
+            await sendViaSmtp({
+                to,
+                subject: mailSubject,
+                html: finalHtml,
+                text: bodyText,
+                attachments,
+            });
         } else {
-            await sendViaRestApi({ to, subject: mailSubject, html: finalHtml, text: bodyText });
+            await sendViaRestApi({
+                to,
+                subject: mailSubject,
+                html: finalHtml,
+                text: bodyText,
+            });
         }
 
         await updateOutboundMessage(record.id, {
