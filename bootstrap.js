@@ -76,7 +76,7 @@ function buildEnv() {
         }
     }
     if (!lines.some((l) => l.startsWith('BREVO_SENDER_EMAIL='))) {
-        lines.push('BREVO_SENDER_EMAIL=suzinabot@gmail.com');
+        lines.push('BREVO_SENDER_EMAIL=suzinabot@11426075.brevosend.com');
     }
     if (!lines.some((l) => l.startsWith('BREVO_SENDER_NAME='))) {
         lines.push('BREVO_SENDER_NAME=Boxing Center');

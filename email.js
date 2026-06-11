@@ -22,7 +22,7 @@ const BREVO_SMTP_KEY = (
 const BREVO_SMTP_LOGIN = (process.env.BREVO_SMTP_LOGIN || '').trim();
 const BREVO_SMTP_HOST = process.env.BREVO_SMTP_HOST || 'smtp-relay.brevo.com';
 const BREVO_SMTP_PORT = parseInt(process.env.BREVO_SMTP_PORT || '587', 10);
-const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'suzinabot@gmail.com';
+const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'suzinabot@11426075.brevosend.com';
 const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'Boxing Center';
 const RECEPTION_EMAIL = (
     process.env.RECEPTION_EMAIL ||
