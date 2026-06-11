@@ -4,6 +4,7 @@ const {
     createOutboundMessage,
     updateOutboundMessage,
 } = require('./supabase');
+const { buildEmailHtml, buildEmailPlainText } = require('./brand');
 
 const BREVO_API_KEY = (process.env.BREVO_API_KEY || '').trim();
 const BREVO_SMTP_KEY = (
@@ -121,34 +122,6 @@ async function verifyEmailSetup() {
     };
 }
 
-function escapeHtml(str) {
-    return String(str || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}
-
-function buildEmailHtml({ subject = '', body = '', recipientName = '' }) {
-    const safeBody = escapeHtml(body).replace(/\n/g, '<br>');
-    const greeting = recipientName ? `<p>Bonjour ${escapeHtml(recipientName)},</p>` : '';
-
-    return `<!DOCTYPE html>
-<html lang="fr">
-<head><meta charset="utf-8"></head>
-<body style="margin:0;padding:24px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#1a1a1a;">
-  <p style="margin:0 0 8px;font-weight:bold;">Boxing Center</p>
-  ${greeting}
-  ${subject ? `<p style="margin:16px 0 8px;font-weight:bold;">${escapeHtml(subject)}</p>` : ''}
-  <div style="margin:0 0 24px;">${safeBody || '&nbsp;'}</div>
-  <hr style="border:none;border-top:1px solid #ddd;margin:24px 0;">
-  <p style="margin:0;font-size:13px;color:#666;">
-    Boxing Center — pour répondre : ${escapeHtml(RECEPTION_EMAIL)}
-  </p>
-</body>
-</html>`;
-}
-
 async function sendViaSmtp({ to, subject, html, text }) {
     await getSmtpTransport().sendMail({
         from: `"${BREVO_SENDER_NAME}" <${BREVO_SENDER_EMAIL}>`,
@@ -181,7 +154,7 @@ async function sendViaRestApi({ to, subject, html, text }) {
     });
 }
 
-async function sendBrevoEmail({ to, subject, html, text, managerId = null }) {
+async function sendBrevoEmail({ to, subject, html, text, managerId = null, recipientName = '' }) {
     if (!isEmailConfigured()) {
         throw new Error(
             'Brevo non configuré — BREVO_SMTP_LOGIN + BREVO_SMTP_KEY (SMTP) ou BREVO_API_KEY API (xkeysib…)'
@@ -191,21 +164,33 @@ async function sendBrevoEmail({ to, subject, html, text, managerId = null }) {
         throw new Error('Destinataire email requis');
     }
 
-    const bodyText = text || (html ? html.replace(/<[^>]+>/g, '') : '');
+    const mailSubject = subject || 'Message Boxing Center';
+    const finalHtml =
+        html ||
+        buildEmailHtml({
+            subject: mailSubject,
+            body: text || '',
+            recipientName,
+        });
+    const bodyText = buildEmailPlainText({
+        subject: mailSubject,
+        body: text || '',
+        recipientName,
+    });
     const record = await createOutboundMessage({
         manager_id: managerId,
         channel: 'email',
         recipient: to,
-        subject: subject || '(sans objet)',
+        subject: mailSubject,
         body: bodyText,
         status: 'pending',
     });
 
     try {
         if (useSmtp()) {
-            await sendViaSmtp({ to, subject, html, text: bodyText });
+            await sendViaSmtp({ to, subject: mailSubject, html: finalHtml, text: bodyText });
         } else {
-            await sendViaRestApi({ to, subject, html, text: bodyText });
+            await sendViaRestApi({ to, subject: mailSubject, html: finalHtml, text: bodyText });
         }
 
         await updateOutboundMessage(record.id, {

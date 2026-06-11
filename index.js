@@ -33,11 +33,17 @@ const {
     createOutboundMessage,
     updateOutboundMessage,
 } = require('./supabase');
-const { sendBrevoEmail, buildEmailHtml, verifyEmailSetup } = require('./email');
+const { sendBrevoEmail, verifyEmailSetup } = require('./email');
+const {
+    appendWhatsAppSignature,
+    buildEmailHtml,
+    WA_CAPTION_MAX,
+} = require('./brand');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
 let sock = null;
 let currentQrBase64 = null;
@@ -340,7 +346,14 @@ async function runTestEnvoi() {
 
     try {
         const html = buildEmailHtml({ subject, body: message, recipientName: name });
-        await sendBrevoEmail({ to: email, subject, html, text: message, managerId });
+        await sendBrevoEmail({
+            to: email,
+            subject,
+            html,
+            text: message,
+            managerId,
+            recipientName: name,
+        });
         results.email = `✅ ${email}`;
     } catch (err) {
         results.email = `❌ ${err.message}`;
@@ -472,17 +485,25 @@ async function sendWhatsAppMessage(phone, message, managerId = null) {
         throw new Error('WhatsApp non connecté');
     }
     const cleanNumber = normalizePhone(phone);
+    const fullMessage = appendWhatsAppSignature(message);
     const record = await createOutboundMessage({
         manager_id: managerId,
         channel: 'whatsapp',
         recipient: cleanNumber,
         subject: null,
-        body: message,
+        body: fullMessage,
         status: 'pending',
     });
     try {
         const jid = `${cleanNumber}@s.whatsapp.net`;
-        await sock.sendMessage(jid, { text: message });
+        const logo = await getMenuLogoBuffer();
+        if (logo && fullMessage.length <= WA_CAPTION_MAX) {
+            await sock.sendMessage(jid, { image: logo, caption: fullMessage });
+        } else if (fullMessage.length <= WA_MAX_LEN) {
+            await sock.sendMessage(jid, { text: fullMessage });
+        } else {
+            await sendLongMessage(jid, fullMessage);
+        }
         await updateOutboundMessage(record.id, {
             status: 'sent',
             sent_at: new Date().toISOString(),
@@ -949,10 +970,17 @@ app.post('/api/send-bulk', async (req, res) => {
 
 app.post('/api/send-email', async (req, res) => {
     if (!verifyApiSecret(req, res)) return;
-    const { to, subject, html, text, manager_id: managerId } = req.body;
+    const { to, subject, html, text, manager_id: managerId, recipient_name: recipientName } = req.body;
     if (!to) return res.status(400).json({ error: 'to required' });
     try {
-        const result = await sendBrevoEmail({ to, subject, html, text, managerId });
+        const result = await sendBrevoEmail({
+            to,
+            subject,
+            html,
+            text,
+            managerId,
+            recipientName,
+        });
         res.json(result);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1056,6 +1084,7 @@ app.post('/api/send-to-managers', async (req, res) => {
                             html: emailHtml,
                             text: message,
                             managerId: mgr.id,
+                            recipientName: mgr.nom,
                         });
                         results.email.sent++;
                         results.destinations.push({
@@ -1089,6 +1118,7 @@ app.post('/api/send-to-managers', async (req, res) => {
                         html: copyHtml,
                         text: message,
                         managerId: null,
+                        recipientName: 'Copie test',
                     });
                     results.email.sent++;
                     results.destinations.push({
