@@ -702,27 +702,38 @@ async function connectToWhatsApp(method = 'qr', phoneNumber = '', options = {}) 
             console.warn('[BOT] Version WA par défaut');
         }
 
+        const pairingPhone = normalizePhone(phoneNumber);
+
         sock = makeWASocket({
             version,
             auth: state,
             logger: pino({ level: 'silent' }),
-            printQRInTerminal: true,
-            browser: ['Boxing Center Bot', 'Chrome', '120.0.0.0'],
+            printQRInTerminal: method !== 'pairing_code',
+            browser:
+                method === 'pairing_code'
+                    ? ['Windows', 'Chrome', '110.0.5481.100']
+                    : ['Boxing Center Bot', 'Chrome', '120.0.0.0'],
             qrTimeout: 60000,
             connectTimeoutMs: 60000,
         });
 
-        if (method === 'pairing_code' && phoneNumber && !sock.authState.creds.me) {
-            setTimeout(async () => {
-                if (!sock || isConnected) return;
-                try {
-                    const code = await sock.requestPairingCode(phoneNumber);
-                    pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
-                } catch (err) {
-                    qrError = 'Code d\'association impossible.';
-                    isLinking = false;
-                }
-            }, 3000);
+        if (method === 'pairing_code' && pairingPhone && !sock.authState.creds.registered) {
+            if (!isValidPhoneDigits(pairingPhone)) {
+                qrError = 'Numéro invalide (indicatif pays, chiffres uniquement).';
+                isLinking = false;
+            } else {
+                setTimeout(async () => {
+                    if (!sock || isConnected) return;
+                    try {
+                        const code = await sock.requestPairingCode(pairingPhone);
+                        pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
+                    } catch (err) {
+                        console.error('[BOT] Erreur code d\'association :', err);
+                        qrError = 'Impossible de générer le code. Vérifiez le numéro et réessayez.';
+                        isLinking = false;
+                    }
+                }, 3000);
+            }
         }
 
         sock.ev.on('connection.update', async (update) => {
@@ -748,7 +759,8 @@ async function connectToWhatsApp(method = 'qr', phoneNumber = '', options = {}) 
                     clearAuthSession();
                     return;
                 }
-                if (isQrExpiredError(lastDisconnect?.error)) {
+                if (method === 'qr' && isQrExpiredError(lastDisconnect?.error)) {
+                    currentQrBase64 = null;
                     scheduleReconnect(method, phoneNumber, 3000, { clearAuth: true });
                     return;
                 }
@@ -819,18 +831,23 @@ app.get('/api/status', (req, res) => {
 app.post('/api/start', (req, res) => {
     const { method, phone } = req.body || {};
     if (isConnected) return res.json({ success: true, message: 'Already connected' });
-    if (method === 'pairing_code' && !phone) {
+    const useMethod = method || 'qr';
+    const pairingPhone = normalizePhone(phone);
+    if (useMethod === 'pairing_code' && !pairingPhone) {
         return res.status(400).json({ error: 'Phone required for pairing code' });
+    }
+    if (useMethod === 'pairing_code' && !isValidPhoneDigits(pairingPhone)) {
+        return res.status(400).json({ error: 'Numéro invalide (indicatif pays, chiffres uniquement)' });
     }
     cancelScheduledReconnect();
     reconnectAttempts = 0;
     qrError = null;
-    const useMethod = method || 'qr';
+    pairingCode = null;
 
     // Réponse immédiate — évite timeout Vercel et bouton bloqué sur « Démarrage… »
     res.json({ success: true, message: 'Started connection process' });
 
-    connectToWhatsApp(useMethod, phone || '', {
+    connectToWhatsApp(useMethod, pairingPhone || '', {
         force: true,
         clearAuth: useMethod === 'qr' || useMethod === 'pairing_code' || !hasRegisteredSession(),
     }).catch((err) => {
