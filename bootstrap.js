@@ -82,10 +82,10 @@ function buildEnv() {
         lines.push('BREVO_SENDER_NAME=Boxing Center');
     }
     if (!lines.some((l) => l.startsWith('RECEPTION_EMAIL='))) {
-        lines.push('RECEPTION_EMAIL=angoularaphael05@gmail.com');
+        lines.push('RECEPTION_EMAIL=boxingcenter31@gmail.com');
     }
     if (!lines.some((l) => l.startsWith('BREVO_REPLY_TO='))) {
-        lines.push('BREVO_REPLY_TO=angoularaphael05@gmail.com');
+        lines.push('BREVO_REPLY_TO=boxingcenter31@gmail.com');
     }
     if (!lines.some((l) => l.startsWith('SERVER_PORT='))) {
         lines.push(`SERVER_PORT=${BOT_PORT}`);
