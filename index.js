@@ -9,8 +9,6 @@ const {
 const pino = require('pino');
 const qrcode = require('qrcode');
 const cors = require('cors');
-const cookieParser = require('cookie-parser');
-const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
@@ -31,22 +29,10 @@ const {
     updateOutboundMessage,
 } = require('./supabase');
 const { sendBrevoEmail } = require('./email');
-const { verifyUser, listUsers, createUser, deleteUser } = require('./users');
 
 const app = express();
-const corsOrigin = process.env.CORS_ORIGIN || '';
-app.use(
-    cors({
-        origin: corsOrigin ? corsOrigin.split(',').map((o) => o.trim()) : true,
-        credentials: true,
-    })
-);
+app.use(cors());
 app.use(express.json());
-app.use(cookieParser());
-
-const SITE_DIR = path.join(__dirname, '..', 'boxing-center-site');
-app.use('/assets', express.static(path.join(__dirname, 'assets')));
-app.use(express.static(SITE_DIR));
 
 let sock = null;
 let currentQrBase64 = null;
@@ -68,13 +54,9 @@ if (!fs.existsSync(AUTH_DIR)) {
 
 const CONFIG_FILE = path.join(__dirname, 'bot_config.json');
 const MENU_LOGO_PATH = path.join(__dirname, 'assets', 'logo.png');
-const SITE_URL = process.env.BOXING_CENTER_SITE_URL || 'https://boxingcenter.fr/';
-const CONTACT_EMAIL = process.env.BREVO_SENDER_EMAIL || 'boxingcenter31@gmail.com';
 const SITE_API_SECRET = process.env.SITE_API_SECRET || '';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || SITE_API_SECRET;
-const JWT_SECRET = process.env.JWT_SECRET || SITE_API_SECRET || 'bc-change-me-in-production';
-const AUTH_COOKIE = 'bc_auth';
-const JWT_EXPIRY = '7d';
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || process.env.BOXING_CENTER_SITE_URL || 'https://boxingcenter.fr/';
+const CONTACT_EMAIL = process.env.BREVO_SENDER_EMAIL || 'boxingcenter31@gmail.com';
 const WA_MAX_LEN = 3800;
 
 function normalizePhone(input) {
@@ -122,45 +104,7 @@ if (fs.existsSync(CONFIG_FILE)) {
     }
 }
 
-function getAuthToken(req) {
-    return req.cookies?.[AUTH_COOKIE]
-        || req.headers.authorization?.replace(/^Bearer\s+/i, '')
-        || null;
-}
-
-function verifySessionToken(token) {
-    if (!token) return null;
-    try {
-        return jwt.verify(token, JWT_SECRET);
-    } catch {
-        return null;
-    }
-}
-
-function getSessionUser(req) {
-    return verifySessionToken(getAuthToken(req));
-}
-
-function signSessionToken(user) {
-    return jwt.sign(user, JWT_SECRET, { expiresIn: JWT_EXPIRY });
-}
-
-function setAuthCookie(res, token) {
-    res.cookie(AUTH_COOKIE, token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-        path: '/',
-    });
-}
-
-function clearAuthCookie(res) {
-    res.clearCookie(AUTH_COOKIE, { path: '/' });
-}
-
 function verifyApiSecret(req, res) {
-    if (getSessionUser(req)) return true;
     const secret = req.headers['x-api-secret']
         || req.headers.authorization?.replace(/^Bearer\s+/i, '');
     if (!SITE_API_SECRET || secret !== SITE_API_SECRET) {
@@ -744,93 +688,6 @@ setTimeout(() => {
 
 // --- API ---
 
-app.post('/api/auth/login', (req, res) => {
-    const { password, email } = req.body || {};
-    const normalizedEmail = String(email || '').trim().toLowerCase();
-
-    let user = null;
-    if (normalizedEmail) {
-        user = verifyUser(normalizedEmail, password);
-    }
-
-    if (!user && ADMIN_PASSWORD && password === ADMIN_PASSWORD) {
-        user = {
-            email: normalizedEmail || 'admin@boxingcenter.fr',
-            role: 'admin',
-            name: 'Admin legacy',
-        };
-    }
-
-    if (!user) {
-        return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
-    }
-
-    const token = signSessionToken(user);
-    setAuthCookie(res, token);
-    res.json({ success: true, user, token });
-});
-
-app.get('/api/auth/me', (req, res) => {
-    const user = getSessionUser(req);
-    if (!user) {
-        return res.status(401).json({ error: 'Non authentifié' });
-    }
-    res.json({ user: { email: user.email, role: user.role } });
-});
-
-app.post('/api/auth/logout', (req, res) => {
-    clearAuthCookie(res);
-    res.json({ success: true });
-});
-
-function requireSession(req, res) {
-    const user = getSessionUser(req);
-    if (!user) {
-        res.status(401).json({ error: 'Non authentifié' });
-        return null;
-    }
-    return user;
-}
-
-function requireSuperAdmin(req, res) {
-    const user = requireSession(req, res);
-    if (!user) return null;
-    if (user.role !== 'super_admin') {
-        res.status(403).json({ error: 'Réservé au super administrateur' });
-        return null;
-    }
-    return user;
-}
-
-app.get('/api/users', (req, res) => {
-    if (!requireSuperAdmin(req, res)) return;
-    res.json({ users: listUsers() });
-});
-
-app.post('/api/users', (req, res) => {
-    const actor = requireSuperAdmin(req, res);
-    if (!actor) return;
-    try {
-        const { email, password, role, name } = req.body || {};
-        const created = createUser({ email, password, role, name }, actor.role);
-        res.json({ success: true, user: created });
-    } catch (err) {
-        res.status(400).json({ error: err.message });
-    }
-});
-
-app.delete('/api/users', (req, res) => {
-    const actor = requireSuperAdmin(req, res);
-    if (!actor) return;
-    try {
-        const email = req.body?.email || req.query?.email;
-        const result = deleteUser(email, actor.email, actor.role);
-        res.json({ success: true, ...result });
-    } catch (err) {
-        res.status(400).json({ error: err.message });
-    }
-});
-
 app.get('/api/status', (req, res) => {
     res.json({
         connected: isConnected,
@@ -845,7 +702,6 @@ app.get('/api/status', (req, res) => {
 });
 
 app.post('/api/start', async (req, res) => {
-    if (!verifyApiSecret(req, res)) return;
     const { method, phone } = req.body;
     if (isConnected) return res.json({ success: true, message: 'Already connected' });
     if (method === 'pairing_code' && !phone) {
@@ -863,7 +719,6 @@ app.post('/api/start', async (req, res) => {
 });
 
 app.post('/api/logout', async (req, res) => {
-    if (!verifyApiSecret(req, res)) return;
     cancelScheduledReconnect();
     reconnectAttempts = 0;
     isLinking = false;
@@ -1054,23 +909,8 @@ app.post('/api/send-to-managers', async (req, res) => {
     }
 });
 
-const SPA_ROUTES = /^\/(login|dashboard(\/.*)?)?$/;
-
-app.use((req, res, next) => {
-    if (req.method !== 'GET' || req.path.startsWith('/api/') || req.path.startsWith('/assets/')) {
-        return next();
-    }
-    if (req.path === '/' || SPA_ROUTES.test(req.path)) {
-        const indexPath = path.join(SITE_DIR, 'index.html');
-        if (fs.existsSync(indexPath)) {
-            return res.sendFile(indexPath);
-        }
-    }
-    next();
-});
-
 const PORT = process.env.PORT || 3002;
 app.listen(PORT, () => {
-    console.log(`Boxing Center Bot API on port ${PORT}`);
-    console.log(`Console web: http://localhost:${PORT}/`);
+    console.log(`Boxing Center Bot — port ${PORT}`);
+    console.log(`Site : ${SITE_URL}`);
 });
