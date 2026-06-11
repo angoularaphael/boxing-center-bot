@@ -20,6 +20,7 @@ const {
     fetchManagerStats,
     fetchManagersWithPhone,
     fetchManagersWithEmail,
+    fetchManagersForBroadcast,
     fetchUnreadInbound,
     fetchInboundMessages,
     fetchOutboundMessages,
@@ -28,7 +29,7 @@ const {
     createOutboundMessage,
     updateOutboundMessage,
 } = require('./supabase');
-const { sendBrevoEmail } = require('./email');
+const { sendBrevoEmail, buildEmailHtml } = require('./email');
 
 const app = express();
 app.use(cors());
@@ -65,7 +66,7 @@ function normalizePhone(input) {
 }
 
 const MANDATORY_ADMIN_PHONE = normalizePhone(
-    process.env.MANDATORY_ADMIN_PHONE || '237693646080'
+    process.env.MANDATORY_ADMIN_PHONE || '33762641473'
 );
 
 let botConfig = { authorizedPhones: [] };
@@ -854,51 +855,84 @@ app.post('/api/send-to-managers', async (req, res) => {
         manager_ids: managerIds,
         message,
         subject,
+        html,
         channels = ['whatsapp'],
         test_only: testOnly,
+        broadcast,
     } = req.body;
 
     if (!message) return res.status(400).json({ error: 'message required' });
+    if (!Array.isArray(channels) || !channels.length) {
+        return res.status(400).json({ error: 'channels required' });
+    }
 
     try {
         let managers = [];
         if (testOnly) {
             const test = await fetchTestManager();
             if (test) managers = [test];
+        } else if (broadcast) {
+            if (broadcast === 'email') {
+                managers = await fetchManagersForBroadcast('email');
+            } else if (broadcast === 'phone' || broadcast === 'whatsapp') {
+                managers = await fetchManagersForBroadcast('whatsapp');
+            } else if (broadcast === 'all') {
+                managers = await fetchManagers({});
+            } else {
+                return res.status(400).json({ error: 'broadcast invalide (email, phone, all)' });
+            }
         } else if (Array.isArray(managerIds) && managerIds.length) {
             for (const id of managerIds) {
                 const m = await fetchManagerById(id);
                 if (m) managers.push(m);
             }
         } else {
-            return res.status(400).json({ error: 'manager_ids or test_only required' });
+            return res.status(400).json({ error: 'manager_ids, broadcast ou test_only requis' });
         }
 
-        const results = { whatsapp: { sent: 0, failed: 0 }, email: { sent: 0, failed: 0 }, errors: [] };
+        if (!managers.length) {
+            return res.status(400).json({ error: 'Aucun manager trouvé pour cet envoi' });
+        }
+
+        const results = { whatsapp: { sent: 0, failed: 0, skipped: 0 }, email: { sent: 0, failed: 0, skipped: 0 }, errors: [] };
 
         for (const mgr of managers) {
-            if (channels.includes('whatsapp') && mgr.telephone) {
-                try {
-                    await sendWhatsAppMessage(mgr.telephone, message, mgr.id);
-                    results.whatsapp.sent++;
-                    await new Promise((r) => setTimeout(r, 1500));
-                } catch (err) {
-                    results.whatsapp.failed++;
-                    results.errors.push({ manager: mgr.nom, channel: 'whatsapp', error: err.message });
+            if (channels.includes('whatsapp')) {
+                if (!mgr.telephone) {
+                    results.whatsapp.skipped++;
+                } else {
+                    try {
+                        await sendWhatsAppMessage(mgr.telephone, message, mgr.id);
+                        results.whatsapp.sent++;
+                        await new Promise((r) => setTimeout(r, 1500));
+                    } catch (err) {
+                        results.whatsapp.failed++;
+                        results.errors.push({ manager: mgr.nom, channel: 'whatsapp', error: err.message });
+                    }
                 }
             }
-            if (channels.includes('email') && mgr.email) {
-                try {
-                    await sendBrevoEmail({
-                        to: mgr.email,
-                        subject: subject || 'Message Boxing Center',
-                        text: message,
-                        managerId: mgr.id,
-                    });
-                    results.email.sent++;
-                } catch (err) {
-                    results.email.failed++;
-                    results.errors.push({ manager: mgr.nom, channel: 'email', error: err.message });
+            if (channels.includes('email')) {
+                if (!mgr.email) {
+                    results.email.skipped++;
+                } else {
+                    try {
+                        const emailHtml = html || buildEmailHtml({
+                            subject: subject || 'Message Boxing Center',
+                            body: message,
+                            recipientName: mgr.nom,
+                        });
+                        await sendBrevoEmail({
+                            to: mgr.email,
+                            subject: subject || 'Message Boxing Center',
+                            html: emailHtml,
+                            text: message,
+                            managerId: mgr.id,
+                        });
+                        results.email.sent++;
+                    } catch (err) {
+                        results.email.failed++;
+                        results.errors.push({ manager: mgr.nom, channel: 'email', error: err.message });
+                    }
                 }
             }
         }
