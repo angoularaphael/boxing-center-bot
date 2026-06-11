@@ -81,7 +81,17 @@ async function sendBrevoEmail({ to, subject, html, text, managerId = null }) {
 
         return { success: true, id: record.id };
     } catch (err) {
-        const message = err.response?.data?.message || err.message;
+        let message = err.response?.data?.message || err.message;
+        const code = err.response?.data?.code || '';
+        if (
+            /sender/i.test(message) ||
+            /not verified/i.test(message) ||
+            code === 'invalid_parameter'
+        ) {
+            message =
+                `Expéditeur Brevo non configuré : validez « ${BREVO_SENDER_EMAIL} » dans Brevo → Expéditeurs. ` +
+                `(Détail : ${message})`;
+        }
         await updateOutboundMessage(record.id, {
             status: 'failed',
             error: message,
