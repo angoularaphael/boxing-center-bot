@@ -961,7 +961,16 @@ app.post('/api/send-to-managers', async (req, res) => {
         let managers = [];
         if (testOnly) {
             const test = await fetchTestManager();
-            if (test) managers = [test];
+            if (test) {
+                managers = [test];
+            } else {
+                managers = [{
+                    nom: 'atangana',
+                    email: TEST_TARGET_EMAIL,
+                    telephone: TEST_TARGET_PHONE,
+                    id: null,
+                }];
+            }
         } else if (broadcast) {
             if (broadcast === 'email') {
                 managers = await fetchManagersForBroadcast('email');
@@ -985,7 +994,12 @@ app.post('/api/send-to-managers', async (req, res) => {
             return res.status(400).json({ error: 'Aucun manager trouvé pour cet envoi' });
         }
 
-        const results = { whatsapp: { sent: 0, failed: 0, skipped: 0 }, email: { sent: 0, failed: 0, skipped: 0 }, errors: [] };
+        const results = {
+            whatsapp: { sent: 0, failed: 0, skipped: 0 },
+            email: { sent: 0, failed: 0, skipped: 0 },
+            errors: [],
+            destinations: [],
+        };
 
         for (const mgr of managers) {
             if (channels.includes('whatsapp')) {
@@ -995,6 +1009,11 @@ app.post('/api/send-to-managers', async (req, res) => {
                     try {
                         await sendWhatsAppMessage(mgr.telephone, message, mgr.id);
                         results.whatsapp.sent++;
+                        results.destinations.push({
+                            channel: 'whatsapp',
+                            to: `+${normalizePhone(mgr.telephone)}`,
+                            manager: mgr.nom,
+                        });
                         await new Promise((r) => setTimeout(r, 1500));
                     } catch (err) {
                         results.whatsapp.failed++;
@@ -1020,10 +1039,47 @@ app.post('/api/send-to-managers', async (req, res) => {
                             managerId: mgr.id,
                         });
                         results.email.sent++;
+                        results.destinations.push({
+                            channel: 'email',
+                            to: mgr.email,
+                            manager: mgr.nom,
+                        });
                     } catch (err) {
                         results.email.failed++;
                         results.errors.push({ manager: mgr.nom, channel: 'email', error: err.message });
                     }
+                }
+            }
+        }
+
+        if (testOnly && channels.includes('email') && RECEPTION_EMAIL) {
+            const copyTo = RECEPTION_EMAIL.trim().toLowerCase();
+            const alreadySent = results.destinations.some(
+                (d) => d.channel === 'email' && d.to?.toLowerCase() === copyTo
+            );
+            if (!alreadySent) {
+                try {
+                    const copyHtml = html || buildEmailHtml({
+                        subject: subject || 'Message Boxing Center',
+                        body: message,
+                        recipientName: 'Copie test',
+                    });
+                    await sendBrevoEmail({
+                        to: RECEPTION_EMAIL,
+                        subject: `[Copie test] ${subject || 'Message Boxing Center'}`,
+                        html: copyHtml,
+                        text: message,
+                        managerId: null,
+                    });
+                    results.email.sent++;
+                    results.destinations.push({
+                        channel: 'email',
+                        to: RECEPTION_EMAIL,
+                        manager: 'copie réception (test)',
+                    });
+                } catch (err) {
+                    results.email.failed++;
+                    results.errors.push({ manager: 'copie réception', channel: 'email', error: err.message });
                 }
             }
         }
