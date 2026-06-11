@@ -33,7 +33,7 @@ const {
     createOutboundMessage,
     updateOutboundMessage,
 } = require('./supabase');
-const { sendBrevoEmail, buildEmailHtml } = require('./email');
+const { sendBrevoEmail, buildEmailHtml, verifyEmailSetup } = require('./email');
 
 const app = express();
 app.use(cors());
@@ -873,49 +873,11 @@ app.get('/api/managers/test', async (req, res) => {
 
 app.get('/api/email-status', async (req, res) => {
     if (!verifyApiSecret(req, res)) return;
-    let senderVerified = false;
-    let senderError = null;
-
-    if (!BREVO_API_KEY) {
-        return res.json({
-            configured: false,
-            hasApiKey: false,
-            senderEmail: SENDER_EMAIL,
-            senderName: BREVO_SENDER_NAME,
-            receptionEmail: RECEPTION_EMAIL,
-            senderVerified: false,
-            hint: 'Ajoutez BREVO_API_KEY dans le .env du bot (Bothosting).',
-        });
-    }
-
     try {
-        const { data } = await axios.get('https://api.brevo.com/v3/senders', {
-            headers: { 'api-key': BREVO_API_KEY, Accept: 'application/json' },
-            timeout: 15000,
-        });
-        const senders = data?.senders || [];
-        senderVerified = senders.some(
-            (s) => s.email?.toLowerCase() === SENDER_EMAIL.toLowerCase() && s.active
-        );
-        if (!senderVerified) {
-            senderError = `L'expéditeur ${SENDER_EMAIL} n'est pas validé dans Brevo.`;
-        }
+        res.json(await verifyEmailSetup());
     } catch (err) {
-        senderError = err.response?.data?.message || err.message;
+        res.status(500).json({ error: err.message });
     }
-
-    res.json({
-        configured: Boolean(BREVO_API_KEY && senderVerified),
-        hasApiKey: Boolean(BREVO_API_KEY),
-        senderEmail: SENDER_EMAIL,
-        senderName: BREVO_SENDER_NAME,
-        receptionEmail: RECEPTION_EMAIL,
-        senderVerified,
-        senderError,
-        hint: senderVerified
-            ? null
-            : `Brevo → Expéditeurs : ajoutez et validez ${SENDER_EMAIL} (ou votre adresse).`,
-    });
 });
 
 app.get('/api/outbound-messages', async (req, res) => {
