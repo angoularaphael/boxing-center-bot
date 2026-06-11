@@ -1129,8 +1129,35 @@ app.post('/api/send-to-managers', async (req, res) => {
 });
 
 const PORT = process.env.PORT || process.env.SERVER_PORT || 3002;
+
+function logBotUrlForVercel(port) {
+    const botUrl = `http://us2.bot-hosting.net:${port}`;
+    console.log('\n🌍 ==================================================');
+    console.log('🌍 URL BOT pour Vercel (NEXT_PUBLIC_WHATSAPP_BOT_URL) :');
+    console.log(`🌍   ${botUrl}`);
+    try {
+        const https = require('https');
+        https
+            .get('https://api.ipify.org', (res) => {
+                let data = '';
+                res.on('data', (c) => {
+                    data += c;
+                });
+                res.on('end', () => {
+                    console.log(`🌍   (IP : http://${data.trim()}:${port})`);
+                    console.log('🌍 ==================================================\n');
+                });
+            })
+            .on('error', () => {
+                console.log('🌍 ==================================================\n');
+            });
+    } catch {
+        console.log('🌍 ==================================================\n');
+    }
+}
+
 app.listen(PORT, () => {
     console.log(`Boxing Center Bot — port ${PORT}`);
     console.log(`Site : ${SITE_URL}`);
-    console.log(`\n🌍 URL pour Vercel (NEXT_PUBLIC_WHATSAPP_BOT_URL) : http://us2.bot-hosting.net:${PORT}\n`);
+    logBotUrlForVercel(PORT);
 });
