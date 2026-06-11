@@ -466,20 +466,6 @@ function formatAllStats(mgr, promo, box) {
     return lines.join('\n');
 }
 
-function formatStats(stats) {
-    return [
-        '📊 *Statistiques managers*',
-        '',
-        `Total : *${stats.total}*`,
-        `Avec téléphone : *${stats.withPhone}*`,
-        `Avec email : *${stats.withEmail}*`,
-        `Les deux : *${stats.both}*`,
-        `Téléphone seul : *${stats.phoneOnly}*`,
-        `Email seul : *${stats.emailOnly}*`,
-        `Sans contact : *${stats.none}*`,
-    ].join('\n');
-}
-
 function extractText(msg) {
     if (!msg?.message) return '';
     const contentType = getContentType(msg.message);
