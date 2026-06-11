@@ -32,6 +32,7 @@ const ENV_KEYS = [
     'BOXING_CENTER_CONTACT_EMAIL',
     'BOXING_CENTER_LOGO_URL',
     'BOT_PUBLIC_URL',
+    'CLOUDFLARE_TUNNEL',
     'RECEPTION_EMAIL',
     'BREVO_REPLY_TO',
     'SERVER_PORT',
@@ -45,9 +46,10 @@ try {
         let data = '';
         res.on('data', (c) => { data += c; });
         res.on('end', () => {
-            console.log(`\n🌍 URL BOT pour Vercel (NEXT_PUBLIC_WHATSAPP_BOT_URL) :`);
+            console.log(`\n🌍 URL BOT directe (port ${BOT_PORT}, non utilisable depuis Vercel) :`);
             console.log(`   http://us2.bot-hosting.net:${BOT_PORT}`);
-            console.log(`   (IP interne : http://${data.trim()}:${BOT_PORT})\n`);
+            console.log(`   (IP interne : http://${data.trim()}:${BOT_PORT})`);
+            console.log(`\n🔒 Avec CLOUDFLARE_TUNNEL=true, l’URL HTTPS s’affiche au démarrage du bot.\n`);
         });
     }).on('error', () => {});
 } catch { /* ignore */ }
@@ -89,6 +91,9 @@ function buildEnv() {
     }
     if (!lines.some((l) => l.startsWith('SERVER_PORT='))) {
         lines.push(`SERVER_PORT=${BOT_PORT}`);
+    }
+    if (!lines.some((l) => l.startsWith('CLOUDFLARE_TUNNEL='))) {
+        lines.push('CLOUDFLARE_TUNNEL=true');
     }
     return `${lines.join('\n')}\n`;
 }

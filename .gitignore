@@ -2,5 +2,6 @@
 env.bothosting
 auth_info_baileys/
 node_modules/
+bin/
 bot_config.json
 users.json

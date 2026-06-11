@@ -39,6 +39,7 @@ const {
     buildEmailHtml,
     WA_CAPTION_MAX,
 } = require('./brand');
+const { startCloudflareTunnel, getTunnelPublicUrl } = require('./cloudflareTunnel');
 
 const app = express();
 app.use(cors());
@@ -814,6 +815,7 @@ app.get('/api/status', (req, res) => {
         mandatoryPhone: MANDATORY_ADMIN_PHONE,
         authorizedPhones: getAllAuthorizedPhones(),
         siteUrl: SITE_URL,
+        tunnelUrl: getTunnelPublicUrl(),
     });
 });
 
@@ -1133,4 +1135,10 @@ const PORT = process.env.PORT || process.env.SERVER_PORT || 3002;
 app.listen(PORT, () => {
     console.log(`Boxing Center Bot — port ${PORT}`);
     console.log(`Site : ${SITE_URL}`);
+    if (process.env.CLOUDFLARE_TUNNEL && !['0', 'false', 'no', 'off'].includes(String(process.env.CLOUDFLARE_TUNNEL).toLowerCase())) {
+        console.log('🌐 Tunnel Cloudflare : activation…');
+        startCloudflareTunnel(PORT);
+    } else {
+        console.log('ℹ️  Tunnel Cloudflare désactivé — CLOUDFLARE_TUNNEL=true pour Vercel (HTTPS).');
+    }
 });
