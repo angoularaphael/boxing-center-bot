@@ -42,7 +42,47 @@ const {
 const { startCloudflareTunnel, getTunnelPublicUrl } = require('./cloudflareTunnel');
 
 const app = express();
-app.use(cors());
+
+const CORS_ORIGINS = [
+    process.env.NEXT_PUBLIC_SITE_URL,
+    'https://gestion-manager.vercel.app',
+    'http://localhost:3000',
+].filter(Boolean);
+
+function corsOrigin(origin, callback) {
+    if (!origin || CORS_ORIGINS.length === 0 || CORS_ORIGINS.includes(origin)) {
+        callback(null, true);
+        return;
+    }
+    callback(null, true);
+}
+
+app.use(
+    cors({
+        origin: corsOrigin,
+        methods: ['GET', 'POST', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'x-api-secret'],
+    })
+);
+app.options(/.*/, cors({ origin: corsOrigin }));
+
+app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && (CORS_ORIGINS.includes(origin) || CORS_ORIGINS.length === 0)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+    } else if (!origin) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-secret');
+    if (req.method === 'OPTIONS') {
+        res.status(204).end();
+        return;
+    }
+    next();
+});
+
 app.use(express.json());
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
