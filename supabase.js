@@ -148,6 +148,30 @@ async function fetchPromoteursForBroadcast(channel = 'email') {
     return data || [];
 }
 
+async function fetchPromoteursWithPhone(limit = 10) {
+    const sb = getSupabase();
+    const { data, error } = await sb
+        .from('promoteurs')
+        .select('nom, telephone, email')
+        .eq('has_phone', true)
+        .order('nom')
+        .limit(limit);
+    if (error) throw error;
+    return data || [];
+}
+
+async function fetchPromoteursWithEmail(limit = 10) {
+    const sb = getSupabase();
+    const { data, error } = await sb
+        .from('promoteurs')
+        .select('nom, email, telephone')
+        .eq('has_email', true)
+        .order('nom')
+        .limit(limit);
+    if (error) throw error;
+    return data || [];
+}
+
 async function fetchBoxeurs({ search = '', contactType = '', categorie = '' } = {}) {
     const sb = getSupabase();
     let query = sb.from('boxeurs').select('*').order('nom', { ascending: true });
@@ -207,6 +231,38 @@ async function fetchBoxeursForBroadcast(channel = 'email', categorie = '') {
     } else if (channel === 'whatsapp' || channel === 'phone') {
         query = query.eq('has_phone', true);
     }
+    if (categorie) {
+        query = query.eq('categorie', categorie);
+    }
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+}
+
+async function fetchBoxeursWithPhone(limit = 10, categorie = '') {
+    const sb = getSupabase();
+    let query = sb
+        .from('boxeurs')
+        .select('nom, telephone, email, categorie')
+        .eq('has_phone', true)
+        .order('nom')
+        .limit(limit);
+    if (categorie) {
+        query = query.eq('categorie', categorie);
+    }
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+}
+
+async function fetchBoxeursWithEmail(limit = 10, categorie = '') {
+    const sb = getSupabase();
+    let query = sb
+        .from('boxeurs')
+        .select('nom, email, telephone, categorie')
+        .eq('has_email', true)
+        .order('nom')
+        .limit(limit);
     if (categorie) {
         query = query.eq('categorie', categorie);
     }
@@ -310,11 +366,15 @@ module.exports = {
     fetchTestPromoteur,
     fetchPromoteurStats,
     fetchPromoteursForBroadcast,
+    fetchPromoteursWithPhone,
+    fetchPromoteursWithEmail,
     fetchBoxeurs,
     fetchBoxeurById,
     fetchTestBoxeur,
     fetchBoxeurStats,
     fetchBoxeursForBroadcast,
+    fetchBoxeursWithPhone,
+    fetchBoxeursWithEmail,
     fetchUnreadInbound,
     fetchInboundMessages,
     fetchOutboundMessages,

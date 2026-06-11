@@ -30,11 +30,15 @@ const {
     fetchTestPromoteur,
     fetchPromoteurStats,
     fetchPromoteursForBroadcast,
+    fetchPromoteursWithPhone,
+    fetchPromoteursWithEmail,
     fetchBoxeurs,
     fetchBoxeurById,
     fetchTestBoxeur,
     fetchBoxeurStats,
     fetchBoxeursForBroadcast,
+    fetchBoxeursWithPhone,
+    fetchBoxeursWithEmail,
     fetchUnreadInbound,
     fetchInboundMessages,
     fetchOutboundMessages,
@@ -219,6 +223,12 @@ const BOT_COMMANDS = new Set([
     '.test', '.testenvoi',
     '.numeros', '.phones',
     '.emails',
+    '.promo-numeros', '.promo-phones',
+    '.promo-emails',
+    '.box-numeros', '.box-phones',
+    '.box-emails',
+    '.box-pro-numeros', '.box-pro-phones',
+    '.box-amateur-numeros', '.box-amateur-phones',
     '.nonlus', '.unread',
     '.stats',
     '.authorise', '.authorize', '.autorise',
@@ -242,12 +252,22 @@ function getMenuText() {
         '`.menu`',
         '`.guide`',
         '`.ping`',
+        '`.stats` — Stats managers + promoteurs + boxeurs',
+        '`.nonlus`',
         '',
         '*Managers*',
         '`.numeros`',
         '`.emails`',
-        '`.stats`',
-        '`.nonlus`',
+        '',
+        '*Promoteurs*',
+        '`.promo-numeros`',
+        '`.promo-emails`',
+        '',
+        '*Boxeurs*',
+        '`.box-numeros`',
+        '`.box-emails`',
+        '`.box-pro-numeros`',
+        '`.box-amateur-numeros`',
         '',
         '*Tests & admin*',
         '`.test`',
@@ -270,12 +290,22 @@ function getGuideText() {
         '• `.menu` — Liste des commandes (+ logo)',
         '• `.guide` — Ce guide détaillé',
         '• `.ping` — Tester la connexion du bot',
+        '• `.stats` — Statistiques managers, promoteurs et boxeurs',
+        '• `.nonlus` / `.unread` — Messages WhatsApp non lus',
         '',
         '*Managers*',
         '• `.numeros` / `.phones` — Managers avec téléphone',
         '• `.emails` — Managers avec email',
-        '• `.stats` — Statistiques contacts',
-        '• `.nonlus` / `.unread` — Messages WhatsApp non lus',
+        '',
+        '*Promoteurs*',
+        '• `.promo-numeros` / `.promo-phones` — Promoteurs avec téléphone',
+        '• `.promo-emails` — Promoteurs avec email',
+        '',
+        '*Boxeurs*',
+        '• `.box-numeros` / `.box-phones` — Tous les boxeurs avec téléphone',
+        '• `.box-emails` — Tous les boxeurs avec email',
+        '• `.box-pro-numeros` — Boxeurs pro avec téléphone',
+        '• `.box-amateur-numeros` — Boxeurs amateur avec téléphone',
         '',
         '*Tests & admin*',
         `• \`.test\` — Envoi test WA + email (atangana : ${TEST_TARGET_PHONE} / ${TEST_TARGET_EMAIL})`,
@@ -284,12 +314,13 @@ function getGuideText() {
         '',
         '*Console web*',
         `• ${SITE_URL}`,
-        `• Emails managers via Brevo (${SENDER_EMAIL})`,
+        '• Envoi managers, promoteurs et boxeurs (email + WhatsApp)',
         `• Réponses / contact : ${RECEPTION_EMAIL}`,
         '',
         '*Exemples*',
         '`.authorise 33762641473`',
         '`.stats`',
+        '`.promo-numeros`',
     ].join('\n');
 }
 
@@ -371,14 +402,15 @@ async function runTestEnvoi() {
     return { results, phone, email, name };
 }
 
-function formatPhoneList(rows, total) {
-    const lines = [`📞 *Managers avec téléphone* — ${total} au total`, ''];
+function formatPhoneList(rows, total, entityLabel = 'Managers') {
+    const lines = [`📞 *${entityLabel} avec téléphone* — ${total} au total`, ''];
     if (!rows.length) {
-        lines.push('Aucun manager avec numéro.');
+        lines.push(`Aucun ${entityLabel.toLowerCase()} avec numéro.`);
         return lines.join('\n');
     }
     rows.forEach((r, i) => {
-        lines.push(`${i + 1}. *${r.nom}* — ${r.telephone || '—'}`);
+        const cat = r.categorie ? ` (${r.categorie})` : '';
+        lines.push(`${i + 1}. *${r.nom}*${cat} — ${r.telephone || '—'}`);
     });
     if (total > rows.length) {
         lines.push('', `_(échantillon ${rows.length}/${total})_`);
@@ -386,14 +418,15 @@ function formatPhoneList(rows, total) {
     return lines.join('\n');
 }
 
-function formatEmailList(rows, total) {
-    const lines = [`📧 *Managers avec email* — ${total} au total`, ''];
+function formatEmailList(rows, total, entityLabel = 'Managers') {
+    const lines = [`📧 *${entityLabel} avec email* — ${total} au total`, ''];
     if (!rows.length) {
-        lines.push('Aucun manager avec email.');
+        lines.push(`Aucun ${entityLabel.toLowerCase()} avec email.`);
         return lines.join('\n');
     }
     rows.forEach((r, i) => {
-        lines.push(`${i + 1}. *${r.nom}* — ${r.email || '—'}`);
+        const cat = r.categorie ? ` (${r.categorie})` : '';
+        lines.push(`${i + 1}. *${r.nom}*${cat} — ${r.email || '—'}`);
     });
     if (total > rows.length) {
         lines.push('', `_(échantillon ${rows.length}/${total})_`);
@@ -411,6 +444,25 @@ function formatUnreadList(rows) {
         const date = new Date(r.received_at).toLocaleString('fr-FR');
         lines.push(`• *${r.from_phone}*${r.from_name ? ` (${r.from_name})` : ''}`, `  ${date}`, `  ${r.body.slice(0, 120)}${r.body.length > 120 ? '…' : ''}`, '');
     });
+    return lines.join('\n');
+}
+
+function formatStatsBlock(title, stats) {
+    return [
+        `*${title}*`,
+        `Total : ${stats.total} · Tél. : ${stats.withPhone} · Email : ${stats.withEmail} · Les deux : ${stats.both}`,
+    ].join('\n');
+}
+
+function formatAllStats(mgr, promo, box) {
+    const lines = ['📊 *Statistiques contacts*', ''];
+    lines.push(formatStatsBlock('Managers', mgr));
+    lines.push('');
+    lines.push(formatStatsBlock('Promoteurs', promo));
+    lines.push('');
+    lines.push(formatStatsBlock('Boxeurs', box));
+    lines.push('', `Amateur : ${box.amateur} · Pro : ${box.pro}`);
+    lines.push('', `Console : ${SITE_URL}`);
     return lines.join('\n');
 }
 
@@ -591,17 +643,47 @@ async function handleIncomingMessages(m) {
             if (cmd === '.numeros' || cmd === '.phones') {
                 const stats = await fetchManagerStats();
                 const sample = await fetchManagersWithPhone(10);
-                await sendLongMessage(sender, formatPhoneList(sample, stats.withPhone));
+                await sendLongMessage(sender, formatPhoneList(sample, stats.withPhone, 'Managers'));
             } else if (cmd === '.emails') {
                 const stats = await fetchManagerStats();
                 const sample = await fetchManagersWithEmail(10);
-                await sendLongMessage(sender, formatEmailList(sample, stats.withEmail));
+                await sendLongMessage(sender, formatEmailList(sample, stats.withEmail, 'Managers'));
+            } else if (cmd === '.promo-numeros' || cmd === '.promo-phones') {
+                const stats = await fetchPromoteurStats();
+                const sample = await fetchPromoteursWithPhone(10);
+                await sendLongMessage(sender, formatPhoneList(sample, stats.withPhone, 'Promoteurs'));
+            } else if (cmd === '.promo-emails') {
+                const stats = await fetchPromoteurStats();
+                const sample = await fetchPromoteursWithEmail(10);
+                await sendLongMessage(sender, formatEmailList(sample, stats.withEmail, 'Promoteurs'));
+            } else if (cmd === '.box-numeros' || cmd === '.box-phones') {
+                const stats = await fetchBoxeurStats();
+                const sample = await fetchBoxeursWithPhone(10);
+                await sendLongMessage(sender, formatPhoneList(sample, stats.withPhone, 'Boxeurs'));
+            } else if (cmd === '.box-emails') {
+                const stats = await fetchBoxeurStats();
+                const sample = await fetchBoxeursWithEmail(10);
+                await sendLongMessage(sender, formatEmailList(sample, stats.withEmail, 'Boxeurs'));
+            } else if (cmd === '.box-pro-numeros' || cmd === '.box-pro-phones') {
+                const sample = await fetchBoxeursWithPhone(10, 'pro');
+                const proRows = await fetchBoxeurs({ categorie: 'pro' });
+                const total = proRows.filter((b) => b.has_phone || b.telephone).length;
+                await sendLongMessage(sender, formatPhoneList(sample, total, 'Boxeurs pro'));
+            } else if (cmd === '.box-amateur-numeros' || cmd === '.box-amateur-phones') {
+                const sample = await fetchBoxeursWithPhone(10, 'amateur');
+                const amateurRows = await fetchBoxeurs({ categorie: 'amateur' });
+                const total = amateurRows.filter((b) => b.has_phone || b.telephone).length;
+                await sendLongMessage(sender, formatPhoneList(sample, total, 'Boxeurs amateur'));
             } else if (cmd === '.nonlus' || cmd === '.unread') {
                 const unread = await fetchUnreadInbound();
                 await sendLongMessage(sender, formatUnreadList(unread));
             } else if (cmd === '.stats') {
-                const stats = await fetchManagerStats();
-                await sendLongMessage(sender, formatStats(stats));
+                const [mgr, promo, box] = await Promise.all([
+                    fetchManagerStats(),
+                    fetchPromoteurStats(),
+                    fetchBoxeurStats(),
+                ]);
+                await sendLongMessage(sender, formatAllStats(mgr, promo, box));
             } else if (cmd === '.test' || cmd === '.testenvoi') {
                 await sock.sendMessage(sender, { text: '🧪 Envoi test en cours (atangana)…' });
                 const { results, phone, email, name } = await runTestEnvoi();
