@@ -62,7 +62,7 @@ const MENU_LOGO_PATH = path.join(__dirname, 'assets', 'logo.png');
 const SITE_API_SECRET = process.env.SITE_API_SECRET || '';
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || process.env.BOXING_CENTER_SITE_URL || 'https://gestion-manager.vercel.app';
 const RECEPTION_EMAIL = process.env.RECEPTION_EMAIL || process.env.BREVO_REPLY_TO || 'angoularaphael05@gmail.com';
-const SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'boxingcenter31@gmail.com';
+const SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'suzinabot@gmail.com';
 const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'Boxing Center';
 const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
 const TEST_TARGET_PHONE = '237693646080';
@@ -796,8 +796,8 @@ app.get('/api/status', (req, res) => {
     });
 });
 
-app.post('/api/start', async (req, res) => {
-    const { method, phone } = req.body;
+app.post('/api/start', (req, res) => {
+    const { method, phone } = req.body || {};
     if (isConnected) return res.json({ success: true, message: 'Already connected' });
     if (method === 'pairing_code' && !phone) {
         return res.status(400).json({ error: 'Phone required for pairing code' });
@@ -806,11 +806,18 @@ app.post('/api/start', async (req, res) => {
     reconnectAttempts = 0;
     qrError = null;
     const useMethod = method || 'qr';
-    await connectToWhatsApp(useMethod, phone || '', {
+
+    // Réponse immédiate — évite timeout Vercel et bouton bloqué sur « Démarrage… »
+    res.json({ success: true, message: 'Started connection process' });
+
+    connectToWhatsApp(useMethod, phone || '', {
         force: true,
         clearAuth: useMethod === 'qr' || useMethod === 'pairing_code' || !hasRegisteredSession(),
+    }).catch((err) => {
+        console.error('[BOT] /api/start:', err);
+        isLinking = false;
+        qrError = err.message || 'Erreur de connexion.';
     });
-    res.json({ success: true, message: 'Started connection process' });
 });
 
 app.post('/api/logout', async (req, res) => {
@@ -907,7 +914,7 @@ app.get('/api/email-status', async (req, res) => {
         senderError,
         hint: senderVerified
             ? null
-            : 'Brevo → Expéditeurs : ajoutez et validez boxingcenter31@gmail.com (ou votre adresse).',
+            : `Brevo → Expéditeurs : ajoutez et validez ${SENDER_EMAIL} (ou votre adresse).`,
     });
 });
 
