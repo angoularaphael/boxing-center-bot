@@ -9,6 +9,7 @@ const {
 const pino = require('pino');
 const qrcode = require('qrcode');
 const cors = require('cors');
+const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 
@@ -62,6 +63,8 @@ const SITE_API_SECRET = process.env.SITE_API_SECRET || '';
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || process.env.BOXING_CENTER_SITE_URL || 'https://gestion-manager.vercel.app';
 const RECEPTION_EMAIL = process.env.RECEPTION_EMAIL || process.env.BREVO_REPLY_TO || 'angoularaphael05@gmail.com';
 const SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'boxingcenter31@gmail.com';
+const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'Boxing Center';
+const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
 const TEST_TARGET_PHONE = '237693646080';
 const TEST_TARGET_EMAIL = 'linuxcam05@gmail.com';
 const WA_MAX_LEN = 3800;
@@ -859,6 +862,53 @@ app.get('/api/managers/test', async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+app.get('/api/email-status', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    let senderVerified = false;
+    let senderError = null;
+
+    if (!BREVO_API_KEY) {
+        return res.json({
+            configured: false,
+            hasApiKey: false,
+            senderEmail: SENDER_EMAIL,
+            senderName: BREVO_SENDER_NAME,
+            receptionEmail: RECEPTION_EMAIL,
+            senderVerified: false,
+            hint: 'Ajoutez BREVO_API_KEY dans le .env du bot (Bothosting).',
+        });
+    }
+
+    try {
+        const { data } = await axios.get('https://api.brevo.com/v3/senders', {
+            headers: { 'api-key': BREVO_API_KEY, Accept: 'application/json' },
+            timeout: 15000,
+        });
+        const senders = data?.senders || [];
+        senderVerified = senders.some(
+            (s) => s.email?.toLowerCase() === SENDER_EMAIL.toLowerCase() && s.active
+        );
+        if (!senderVerified) {
+            senderError = `L'expéditeur ${SENDER_EMAIL} n'est pas validé dans Brevo.`;
+        }
+    } catch (err) {
+        senderError = err.response?.data?.message || err.message;
+    }
+
+    res.json({
+        configured: Boolean(BREVO_API_KEY && senderVerified),
+        hasApiKey: Boolean(BREVO_API_KEY),
+        senderEmail: SENDER_EMAIL,
+        senderName: BREVO_SENDER_NAME,
+        receptionEmail: RECEPTION_EMAIL,
+        senderVerified,
+        senderError,
+        hint: senderVerified
+            ? null
+            : 'Brevo → Expéditeurs : ajoutez et validez boxingcenter31@gmail.com (ou votre adresse).',
+    });
 });
 
 app.get('/api/outbound-messages', async (req, res) => {
