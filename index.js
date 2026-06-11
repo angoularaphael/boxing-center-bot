@@ -25,6 +25,11 @@ const {
     fetchManagersWithPhone,
     fetchManagersWithEmail,
     fetchManagersForBroadcast,
+    fetchPromoteurs,
+    fetchPromoteurById,
+    fetchTestPromoteur,
+    fetchPromoteurStats,
+    fetchPromoteursForBroadcast,
     fetchUnreadInbound,
     fetchInboundMessages,
     fetchOutboundMessages,
@@ -479,14 +484,15 @@ async function reactToCommand(msg) {
     }
 }
 
-async function sendWhatsAppMessage(phone, message, managerId = null) {
+async function sendWhatsAppMessage(phone, message, managerId = null, promoterId = null) {
     if (!isConnected || !sock) {
         throw new Error('WhatsApp non connecté');
     }
     const cleanNumber = normalizePhone(phone);
     const fullMessage = appendWhatsAppSignature(message);
     const record = await createOutboundMessage({
-        manager_id: managerId,
+        manager_id: promoterId ? null : managerId,
+        promoter_id: promoterId || null,
         channel: 'whatsapp',
         recipient: cleanNumber,
         subject: null,
@@ -908,6 +914,28 @@ app.get('/api/managers/test', async (req, res) => {
     }
 });
 
+app.get('/api/promoteurs', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    try {
+        const promoteurs = await fetchPromoteurs({
+            search: req.query.search || '',
+            contactType: req.query.contact_type || req.query.contactType || '',
+        });
+        res.json({ promoteurs });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/promoteurs/stats', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    try {
+        res.json(await fetchPromoteurStats());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/api/email-status', async (req, res) => {
     if (!verifyApiSecret(req, res)) return;
     try {
@@ -1140,6 +1168,151 @@ app.post('/api/send-to-managers', async (req, res) => {
         }
 
         res.json({ success: true, managers: managers.length, ...results });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+async function deliverToPromoteur(prom, { message, subject, html, channels, results }) {
+    const mailSubject = subject || 'Message Boxing Center';
+    const tasks = [];
+
+    if (channels.includes('whatsapp')) {
+        tasks.push((async () => {
+            if (!prom.telephone) {
+                results.whatsapp.skipped++;
+                return;
+            }
+            try {
+                await sendWhatsAppMessage(prom.telephone, message, null, prom.id);
+                results.whatsapp.sent++;
+                results.destinations.push({
+                    channel: 'whatsapp',
+                    to: `+${normalizePhone(prom.telephone)}`,
+                    promoter: prom.nom,
+                });
+            } catch (err) {
+                results.whatsapp.failed++;
+                results.errors.push({ promoter: prom.nom, channel: 'whatsapp', error: err.message });
+            }
+        })());
+    }
+
+    if (channels.includes('email')) {
+        tasks.push((async () => {
+            if (!prom.email) {
+                results.email.skipped++;
+                return;
+            }
+            try {
+                const emailHtml = html || buildEmailHtml({
+                    subject: mailSubject,
+                    body: message,
+                    recipientName: prom.nom,
+                });
+                await sendBrevoEmail({
+                    to: prom.email,
+                    subject: mailSubject,
+                    html: emailHtml,
+                    text: message,
+                    promoterId: prom.id,
+                    recipientName: prom.nom,
+                });
+                results.email.sent++;
+                results.destinations.push({
+                    channel: 'email',
+                    to: prom.email,
+                    promoter: prom.nom,
+                });
+            } catch (err) {
+                results.email.failed++;
+                results.errors.push({ promoter: prom.nom, channel: 'email', error: err.message });
+            }
+        })());
+    }
+
+    await Promise.all(tasks);
+}
+
+app.post('/api/send-to-promoteurs', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const {
+        promoter_ids: promoterIds,
+        message,
+        subject,
+        html,
+        channels = ['whatsapp'],
+        test_only: testOnly,
+        broadcast,
+    } = req.body;
+
+    if (!message) return res.status(400).json({ error: 'message required' });
+    if (!Array.isArray(channels) || !channels.length) {
+        return res.status(400).json({ error: 'channels required' });
+    }
+
+    try {
+        let promoteurs = [];
+        if (testOnly) {
+            const test = await fetchTestPromoteur();
+            if (test) {
+                promoteurs = [test];
+            } else {
+                const fallback = await fetchTestManager();
+                promoteurs = fallback
+                    ? [fallback]
+                    : [{
+                        nom: 'atangana',
+                        email: TEST_TARGET_EMAIL,
+                        telephone: TEST_TARGET_PHONE,
+                        id: null,
+                    }];
+            }
+        } else if (broadcast) {
+            if (broadcast === 'email') {
+                promoteurs = await fetchPromoteursForBroadcast('email');
+            } else if (broadcast === 'phone' || broadcast === 'whatsapp') {
+                promoteurs = await fetchPromoteursForBroadcast('whatsapp');
+            } else if (broadcast === 'all') {
+                promoteurs = await fetchPromoteurs({});
+            } else {
+                return res.status(400).json({ error: 'broadcast invalide (email, phone, all)' });
+            }
+        } else if (Array.isArray(promoterIds) && promoterIds.length) {
+            for (const id of promoterIds) {
+                const p = await fetchPromoteurById(id);
+                if (p) promoteurs.push(p);
+            }
+        } else {
+            return res.status(400).json({ error: 'promoter_ids, broadcast ou test_only requis' });
+        }
+
+        if (!promoteurs.length) {
+            return res.status(400).json({ error: 'Aucun promoteur trouvé pour cet envoi' });
+        }
+
+        const results = {
+            whatsapp: { sent: 0, failed: 0, skipped: 0 },
+            email: { sent: 0, failed: 0, skipped: 0 },
+            errors: [],
+            destinations: [],
+        };
+
+        const fastBatch = testOnly || promoteurs.length <= 5;
+        const ctx = { message, subject, html, channels, results };
+
+        if (fastBatch) {
+            await Promise.all(promoteurs.map((prom) => deliverToPromoteur(prom, ctx)));
+        } else {
+            for (const prom of promoteurs) {
+                await deliverToPromoteur(prom, ctx);
+                if (channels.includes('whatsapp')) {
+                    await new Promise((r) => setTimeout(r, 1500));
+                }
+            }
+        }
+
+        res.json({ success: true, promoteurs: promoteurs.length, ...results });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
