@@ -5,7 +5,7 @@ const {
 } = require('./supabase');
 
 const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
-const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'boxingcenter31@gmail.com';
+const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'suzinabot@gmail.com';
 const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'Boxing Center';
 const RECEPTION_EMAIL = process.env.RECEPTION_EMAIL || process.env.BREVO_REPLY_TO || 'angoularaphael05@gmail.com';
 
