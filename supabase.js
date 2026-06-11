@@ -76,6 +76,19 @@ async function fetchManagersWithPhone(limit = 10) {
     return data || [];
 }
 
+async function fetchManagersForBroadcast(channel = 'email') {
+    const sb = getSupabase();
+    let query = sb.from('managers').select('*').order('nom', { ascending: true });
+    if (channel === 'email') {
+        query = query.eq('has_email', true);
+    } else if (channel === 'whatsapp' || channel === 'phone') {
+        query = query.eq('has_phone', true);
+    }
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+}
+
 async function fetchManagersWithEmail(limit = 10) {
     const sb = getSupabase();
     const { data, error } = await sb
@@ -165,6 +178,7 @@ module.exports = {
     fetchManagerStats,
     fetchManagersWithPhone,
     fetchManagersWithEmail,
+    fetchManagersForBroadcast,
     fetchUnreadInbound,
     fetchInboundMessages,
     fetchOutboundMessages,

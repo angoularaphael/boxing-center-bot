@@ -1,4 +1,5 @@
 .env
+env.bothosting
 auth_info_baileys/
 node_modules/
 bot_config.json
