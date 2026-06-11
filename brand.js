@@ -45,17 +45,18 @@ function siteHost() {
 function buildWhatsAppSignature() {
     return [
         '',
-        '────────────────',
-        '🥊 *Boxing Center*',
+        '━━━━━━━━━━━━━━━━',
+        '🥊 *BOXING CENTER*',
         `🌐 ${siteHost()}`,
         `✉️ ${BOXING_CENTER_CONTACT_EMAIL}`,
+        '━━━━━━━━━━━━━━━━',
     ].join('\n');
 }
 
 function appendWhatsAppSignature(message) {
     const body = String(message || '').trimEnd();
-    if (body.includes('boxingcenter.fr') && body.includes(BOXING_CENTER_CONTACT_EMAIL)) {
-        return body;
+    if (body.includes('*BOXING CENTER*') || body.includes('*Boxing Center*')) {
+        if (body.includes(BOXING_CENTER_CONTACT_EMAIL)) return body;
     }
     return `${body}${buildWhatsAppSignature()}`;
 }
