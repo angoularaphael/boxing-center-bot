@@ -10,7 +10,6 @@ const BOXING_CENTER_CONTACT_EMAIL = (
     process.env.BOXING_CENTER_CONTACT_EMAIL ||
     process.env.RECEPTION_EMAIL ||
     process.env.BREVO_REPLY_TO ||
-    process.env.BREVO_SENDER_EMAIL ||
     'boxingcenter31@gmail.com'
 ).trim();
 
