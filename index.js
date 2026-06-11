@@ -1,0 +1,1076 @@
+const express = require('express');
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    getContentType,
+} = require('@whiskeysockets/baileys');
+const pino = require('pino');
+const qrcode = require('qrcode');
+const cors = require('cors');
+const cookieParser = require('cookie-parser');
+const jwt = require('jsonwebtoken');
+const fs = require('fs');
+const path = require('path');
+require('dotenv').config();
+
+const {
+    fetchManagers,
+    fetchManagerById,
+    fetchTestManager,
+    fetchManagerStats,
+    fetchManagersWithPhone,
+    fetchManagersWithEmail,
+    fetchUnreadInbound,
+    fetchInboundMessages,
+    fetchOutboundMessages,
+    saveInboundMessage,
+    markInboundRead,
+    createOutboundMessage,
+    updateOutboundMessage,
+} = require('./supabase');
+const { sendBrevoEmail } = require('./email');
+const { verifyUser, listUsers, createUser, deleteUser } = require('./users');
+
+const app = express();
+const corsOrigin = process.env.CORS_ORIGIN || '';
+app.use(
+    cors({
+        origin: corsOrigin ? corsOrigin.split(',').map((o) => o.trim()) : true,
+        credentials: true,
+    })
+);
+app.use(express.json());
+app.use(cookieParser());
+
+const SITE_DIR = path.join(__dirname, '..', 'boxing-center-site');
+app.use('/assets', express.static(path.join(__dirname, 'assets')));
+app.use(express.static(SITE_DIR));
+
+let sock = null;
+let currentQrBase64 = null;
+let pairingCode = null;
+let isConnected = false;
+let isLinking = false;
+let linkMethod = 'qr';
+let linkPhone = '';
+let qrError = null;
+let reconnectTimer = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 6;
+const lidPhoneCache = new Map();
+
+const AUTH_DIR = path.join(__dirname, 'auth_info_baileys');
+if (!fs.existsSync(AUTH_DIR)) {
+    fs.mkdirSync(AUTH_DIR);
+}
+
+const CONFIG_FILE = path.join(__dirname, 'bot_config.json');
+const MENU_LOGO_PATH = path.join(__dirname, 'assets', 'logo.png');
+const SITE_URL = process.env.BOXING_CENTER_SITE_URL || 'https://boxingcenter.fr/';
+const CONTACT_EMAIL = process.env.BREVO_SENDER_EMAIL || 'boxingcenter31@gmail.com';
+const SITE_API_SECRET = process.env.SITE_API_SECRET || '';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || SITE_API_SECRET;
+const JWT_SECRET = process.env.JWT_SECRET || SITE_API_SECRET || 'bc-change-me-in-production';
+const AUTH_COOKIE = 'bc_auth';
+const JWT_EXPIRY = '7d';
+const WA_MAX_LEN = 3800;
+
+function normalizePhone(input) {
+    if (!input) return '';
+    return String(input).split('@')[0].split(':')[0].replace(/\D/g, '');
+}
+
+const MANDATORY_ADMIN_PHONE = normalizePhone(
+    process.env.MANDATORY_ADMIN_PHONE || '237693646080'
+);
+
+let botConfig = { authorizedPhones: [] };
+
+function saveConfig() {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(botConfig, null, 2));
+}
+
+function isValidPhoneDigits(digits) {
+    return digits.length >= 9 && digits.length <= 15;
+}
+
+function migrateConfig(parsed) {
+    let authorizedPhones = Array.isArray(parsed.authorizedPhones)
+        ? parsed.authorizedPhones.map(normalizePhone).filter(Boolean)
+        : [];
+    authorizedPhones = authorizedPhones
+        .filter((p) => p !== MANDATORY_ADMIN_PHONE)
+        .filter((p) => isValidPhoneDigits(p));
+    return { authorizedPhones };
+}
+
+function getAllAuthorizedPhones() {
+    const extra = (botConfig.authorizedPhones || [])
+        .map(normalizePhone)
+        .filter((p) => p && p !== MANDATORY_ADMIN_PHONE);
+    return [...new Set([MANDATORY_ADMIN_PHONE, ...extra])];
+}
+
+if (fs.existsSync(CONFIG_FILE)) {
+    try {
+        botConfig = migrateConfig(JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')));
+        saveConfig();
+    } catch (e) {
+        console.error('[BOT] Erreur lecture config', e);
+    }
+}
+
+function getAuthToken(req) {
+    return req.cookies?.[AUTH_COOKIE]
+        || req.headers.authorization?.replace(/^Bearer\s+/i, '')
+        || null;
+}
+
+function verifySessionToken(token) {
+    if (!token) return null;
+    try {
+        return jwt.verify(token, JWT_SECRET);
+    } catch {
+        return null;
+    }
+}
+
+function getSessionUser(req) {
+    return verifySessionToken(getAuthToken(req));
+}
+
+function signSessionToken(user) {
+    return jwt.sign(user, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+}
+
+function setAuthCookie(res, token) {
+    res.cookie(AUTH_COOKIE, token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+        path: '/',
+    });
+}
+
+function clearAuthCookie(res) {
+    res.clearCookie(AUTH_COOKIE, { path: '/' });
+}
+
+function verifyApiSecret(req, res) {
+    if (getSessionUser(req)) return true;
+    const secret = req.headers['x-api-secret']
+        || req.headers.authorization?.replace(/^Bearer\s+/i, '');
+    if (!SITE_API_SECRET || secret !== SITE_API_SECRET) {
+        res.status(401).json({ error: 'Non autorisé' });
+        return false;
+    }
+    return true;
+}
+
+function isPnJid(jid) {
+    const s = String(jid || '');
+    return s.includes('@s.whatsapp.net') || s.endsWith('@c.us');
+}
+
+function isLidJid(jid) {
+    return String(jid || '').includes('@lid');
+}
+
+function storeLidMapping(lid, pn) {
+    const lidKey = normalizePhone(lid);
+    const phone = normalizePhone(pn);
+    if (lidKey && phone && isValidPhoneDigits(phone)) {
+        lidPhoneCache.set(lidKey, phone);
+    }
+}
+
+function cacheLidFromMessage(key) {
+    if (!key) return;
+    const primary = key.participant || key.remoteJid;
+    const alt = key.participantAlt || key.remoteJidAlt;
+    if (primary && alt && (isLidJid(primary) || !isPnJid(primary)) && isPnJid(alt)) {
+        storeLidMapping(primary, alt);
+    }
+}
+
+function resolveSenderPhone(msg) {
+    const key = msg.key || {};
+    if (msg.key.fromMe) {
+        return sock?.user?.id ? normalizePhone(sock.user.id) : '';
+    }
+    for (const altJid of [key.participantAlt, key.remoteJidAlt]) {
+        if (altJid && isPnJid(altJid)) {
+            const phone = normalizePhone(altJid);
+            if (isValidPhoneDigits(phone)) return phone;
+        }
+    }
+    const primary = key.participant || key.remoteJid || '';
+    if (primary && isPnJid(primary)) {
+        const phone = normalizePhone(primary);
+        if (isValidPhoneDigits(phone)) return phone;
+    }
+    const lidKey = normalizePhone(primary);
+    if (lidKey && lidPhoneCache.has(lidKey)) {
+        return lidPhoneCache.get(lidKey);
+    }
+    if (sock?.signalRepository?.lidMapping?.getPNForLID) {
+        try {
+            const lidJid = isLidJid(primary) ? primary : `${lidKey}@lid`;
+            const pn = sock.signalRepository.lidMapping.getPNForLID(lidJid);
+            if (pn) {
+                const phone = normalizePhone(pn);
+                if (isValidPhoneDigits(phone)) {
+                    storeLidMapping(lidKey, phone);
+                    return phone;
+                }
+            }
+        } catch (e) {
+            console.warn('[BOT] getPNForLID:', e.message);
+        }
+    }
+    if (isValidPhoneDigits(lidKey) && !isLidJid(primary)) {
+        return lidKey;
+    }
+    return '';
+}
+
+function isSenderAuthorized(msg) {
+    const senderPhone = resolveSenderPhone(msg);
+    if (!senderPhone) return false;
+    return getAllAuthorizedPhones().includes(senderPhone);
+}
+
+const BOT_COMMANDS = new Set([
+    '.menu',
+    '.guide', '.aide', '.help',
+    '.numeros', '.phones',
+    '.emails',
+    '.nonlus', '.unread',
+    '.stats',
+    '.authorise', '.authorize', '.autorise',
+    '.unauthorise', '.unauthorize', '.unautorise',
+]);
+
+function isKnownBotCommand(cleanText, cmd) {
+    if (BOT_COMMANDS.has(cmd)) return true;
+    return ['.authorise', '.authorize', '.autorise', '.unauthorise', '.unauthorize', '.unautorise'].some(
+        (p) => cleanText.startsWith(p)
+    );
+}
+
+const COMMAND_REACTION = '🥊';
+
+function getMenuText() {
+    return [
+        '🥊 *Boxing Center Bot*',
+        '',
+        'Bienvenue sur la plateforme de messagerie Boxing Center.',
+        '',
+        `🌐 Site : ${SITE_URL}`,
+        `📧 Questions : ${CONTACT_EMAIL}`,
+        '',
+        'Tapez `.guide` pour la liste des commandes (admins).',
+    ].join('\n');
+}
+
+function getGuideText() {
+    return [
+        '📖 *Guide — Boxing Center Bot*',
+        '',
+        '• `.menu` — Accueil + logo',
+        '• `.guide` — Ce guide',
+        '• `.numeros` / `.phones` — Managers avec téléphone',
+        '• `.emails` — Managers avec email',
+        '• `.nonlus` / `.unread` — Messages WhatsApp non lus',
+        '• `.stats` — Statistiques contacts managers',
+        '• `.authorise NUMERO` — Autoriser un admin',
+        '• `.unauthorise NUMERO` — Retirer un admin',
+    ].join('\n');
+}
+
+async function getMenuLogoBuffer() {
+    if (fs.existsSync(MENU_LOGO_PATH)) {
+        return fs.readFileSync(MENU_LOGO_PATH);
+    }
+    return null;
+}
+
+async function sendLongMessage(jid, text) {
+    if (text.length <= WA_MAX_LEN) {
+        await sock.sendMessage(jid, { text });
+        return;
+    }
+    let rest = text;
+    while (rest.length > WA_MAX_LEN) {
+        await sock.sendMessage(jid, { text: rest.slice(0, WA_MAX_LEN) });
+        rest = rest.slice(WA_MAX_LEN);
+        await new Promise((r) => setTimeout(r, 400));
+    }
+    if (rest) await sock.sendMessage(jid, { text: rest });
+}
+
+async function sendTextWithLogo(jid, text, logo = null) {
+    const img = logo ?? (await getMenuLogoBuffer());
+    if (img) {
+        await sock.sendMessage(jid, { image: img, caption: text });
+    } else {
+        await sock.sendMessage(jid, { text });
+    }
+}
+
+async function sendMenu(jid) {
+    await sendTextWithLogo(jid, getMenuText());
+}
+
+async function sendGuide(jid) {
+    await sendLongMessage(jid, getGuideText());
+}
+
+function formatPhoneList(rows, total) {
+    const lines = [`📞 *Managers avec téléphone* — ${total} au total`, ''];
+    if (!rows.length) {
+        lines.push('Aucun manager avec numéro.');
+        return lines.join('\n');
+    }
+    rows.forEach((r, i) => {
+        lines.push(`${i + 1}. *${r.nom}* — ${r.telephone || '—'}`);
+    });
+    if (total > rows.length) {
+        lines.push('', `_(échantillon ${rows.length}/${total})_`);
+    }
+    return lines.join('\n');
+}
+
+function formatEmailList(rows, total) {
+    const lines = [`📧 *Managers avec email* — ${total} au total`, ''];
+    if (!rows.length) {
+        lines.push('Aucun manager avec email.');
+        return lines.join('\n');
+    }
+    rows.forEach((r, i) => {
+        lines.push(`${i + 1}. *${r.nom}* — ${r.email || '—'}`);
+    });
+    if (total > rows.length) {
+        lines.push('', `_(échantillon ${rows.length}/${total})_`);
+    }
+    return lines.join('\n');
+}
+
+function formatUnreadList(rows) {
+    const lines = [`📥 *Messages non lus* — ${rows.length}`, ''];
+    if (!rows.length) {
+        lines.push('Aucun message non lu.');
+        return lines.join('\n');
+    }
+    rows.forEach((r) => {
+        const date = new Date(r.received_at).toLocaleString('fr-FR');
+        lines.push(`• *${r.from_phone}*${r.from_name ? ` (${r.from_name})` : ''}`, `  ${date}`, `  ${r.body.slice(0, 120)}${r.body.length > 120 ? '…' : ''}`, '');
+    });
+    return lines.join('\n');
+}
+
+function formatStats(stats) {
+    return [
+        '📊 *Statistiques managers*',
+        '',
+        `Total : *${stats.total}*`,
+        `Avec téléphone : *${stats.withPhone}*`,
+        `Avec email : *${stats.withEmail}*`,
+        `Les deux : *${stats.both}*`,
+        `Téléphone seul : *${stats.phoneOnly}*`,
+        `Email seul : *${stats.emailOnly}*`,
+        `Sans contact : *${stats.none}*`,
+    ].join('\n');
+}
+
+function extractText(msg) {
+    if (!msg?.message) return '';
+    const contentType = getContentType(msg.message);
+    if (contentType === 'conversation') return msg.message.conversation || '';
+    if (contentType === 'extendedTextMessage') return msg.message.extendedTextMessage?.text || '';
+    if (contentType === 'imageMessage') return msg.message.imageMessage?.caption || '';
+    return '';
+}
+
+function parseCommandPhone(text, commandBase) {
+    const trimmed = text.trim();
+    const bases = [commandBase];
+    if (commandBase === 'authorise') bases.push('authorize', 'autorise');
+    if (commandBase === 'unauthorise') bases.push('unauthorize', 'unautorise');
+    for (const base of bases) {
+        const patterns = [
+            new RegExp(`^\\.${base}\\s*\\((\\d{9,15})\\)`, 'i'),
+            new RegExp(`^\\.${base}\\s+(\\d{9,15})`, 'i'),
+        ];
+        for (const pattern of patterns) {
+            const match = trimmed.match(pattern);
+            if (match) return normalizePhone(match[1]);
+        }
+    }
+    return null;
+}
+
+function addAuthorizedPhone(phone) {
+    if (!isValidPhoneDigits(phone)) {
+        return { ok: false, message: '❌ Numéro invalide.' };
+    }
+    if (phone === MANDATORY_ADMIN_PHONE) {
+        return { ok: true, message: 'ℹ️ Numéro déjà autorisé en permanence.' };
+    }
+    if (!botConfig.authorizedPhones.includes(phone)) {
+        botConfig.authorizedPhones.push(phone);
+        saveConfig();
+    }
+    return { ok: true, message: `✅ ${phone} autorisé.` };
+}
+
+function removeAuthorizedPhone(phone) {
+    if (phone === MANDATORY_ADMIN_PHONE) {
+        return { ok: false, message: '⛔ Numéro obligatoire, non supprimable.' };
+    }
+    botConfig.authorizedPhones = botConfig.authorizedPhones.filter((p) => p !== phone);
+    saveConfig();
+    return { ok: true, message: `✅ ${phone} retiré.` };
+}
+
+async function reactToCommand(msg) {
+    if (!sock || !msg?.key?.remoteJid) return;
+    try {
+        await sock.sendMessage(msg.key.remoteJid, {
+            react: { text: COMMAND_REACTION, key: msg.key },
+        });
+    } catch (err) {
+        console.warn('[BOT] Réaction:', err.message);
+    }
+}
+
+async function sendWhatsAppMessage(phone, message, managerId = null) {
+    if (!isConnected || !sock) {
+        throw new Error('WhatsApp non connecté');
+    }
+    const cleanNumber = normalizePhone(phone);
+    const record = await createOutboundMessage({
+        manager_id: managerId,
+        channel: 'whatsapp',
+        recipient: cleanNumber,
+        subject: null,
+        body: message,
+        status: 'pending',
+    });
+    try {
+        const jid = `${cleanNumber}@s.whatsapp.net`;
+        await sock.sendMessage(jid, { text: message });
+        await updateOutboundMessage(record.id, {
+            status: 'sent',
+            sent_at: new Date().toISOString(),
+        });
+        return { success: true, id: record.id, phone: cleanNumber };
+    } catch (err) {
+        await updateOutboundMessage(record.id, {
+            status: 'failed',
+            error: err.message,
+        });
+        throw err;
+    }
+}
+
+async function handleIncomingMessages(m) {
+    if (m.type && m.type !== 'notify') return;
+    if (!m.messages?.length) return;
+
+    for (const msg of m.messages) {
+        try {
+            if (!msg.message || msg.key.fromMe) continue;
+            cacheLidFromMessage(msg.key);
+
+            const text = extractText(msg);
+            if (!text) continue;
+
+            const sender = msg.key.remoteJid;
+            const senderPhone = resolveSenderPhone(msg);
+            const cleanText = text.trim().toLowerCase();
+            const isCommand = cleanText.startsWith('.');
+
+            if (!isCommand) {
+                if (senderPhone) {
+                    await saveInboundMessage({
+                        fromPhone: senderPhone,
+                        fromName: msg.pushName || null,
+                        body: text.trim(),
+                    });
+                }
+                continue;
+            }
+
+            const cmd = cleanText.split(/\s+/)[0].split('(')[0].split(':')[0];
+            if (!isKnownBotCommand(cleanText, cmd)) continue;
+
+            await reactToCommand(msg);
+
+            if (cmd === '.menu') {
+                await sendMenu(sender);
+                continue;
+            }
+
+            if (cmd === '.guide' || cmd === '.aide' || cmd === '.help') {
+                if (!isSenderAuthorized(msg)) {
+                    await sock.sendMessage(sender, { text: '⛔ Non autorisé. Tapez `.menu`.' });
+                    continue;
+                }
+                await sendGuide(sender);
+                continue;
+            }
+
+            if (!isSenderAuthorized(msg)) {
+                await sock.sendMessage(sender, { text: '⛔ Non autorisé.' });
+                continue;
+            }
+
+            if (cmd === '.numeros' || cmd === '.phones') {
+                const stats = await fetchManagerStats();
+                const sample = await fetchManagersWithPhone(10);
+                await sendLongMessage(sender, formatPhoneList(sample, stats.withPhone));
+            } else if (cmd === '.emails') {
+                const stats = await fetchManagerStats();
+                const sample = await fetchManagersWithEmail(10);
+                await sendLongMessage(sender, formatEmailList(sample, stats.withEmail));
+            } else if (cmd === '.nonlus' || cmd === '.unread') {
+                const unread = await fetchUnreadInbound();
+                await sendLongMessage(sender, formatUnreadList(unread));
+            } else if (cmd === '.stats') {
+                const stats = await fetchManagerStats();
+                await sendLongMessage(sender, formatStats(stats));
+            } else if (cmd === '.authorise' || cleanText.startsWith('.authorize') || cleanText.startsWith('.autorise')) {
+                const phone = parseCommandPhone(text, 'authorise');
+                const result = phone ? addAuthorizedPhone(phone) : { ok: false, message: '❌ Format: `.authorise NUMERO`' };
+                await sock.sendMessage(sender, { text: result.message });
+            } else if (
+                cmd === '.unauthorise' ||
+                cleanText.startsWith('.unauthorize') ||
+                cleanText.startsWith('.unautorise')
+            ) {
+                const phone = parseCommandPhone(text, 'unauthorise');
+                const result = phone ? removeAuthorizedPhone(phone) : { ok: false, message: '❌ Format: `.unauthorise NUMERO`' };
+                await sock.sendMessage(sender, { text: result.message });
+            }
+        } catch (err) {
+            console.error('[BOT] Erreur message:', err);
+        }
+    }
+}
+
+function hasRegisteredSession() {
+    const creds = path.join(AUTH_DIR, 'creds.json');
+    return fs.existsSync(creds) && fs.statSync(creds).size > 50;
+}
+
+function clearAuthSession() {
+    if (fs.existsSync(AUTH_DIR)) {
+        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+        fs.mkdirSync(AUTH_DIR);
+    }
+}
+
+function isQrExpiredError(error) {
+    const msg = String(error?.message || error || '').toLowerCase();
+    return msg.includes('qr') && (msg.includes('expir') || msg.includes('timeout'));
+}
+
+async function destroySocket() {
+    const old = sock;
+    sock = null;
+    if (!old) return;
+    try {
+        old.ev.removeAllListeners('connection.update');
+        old.ev.removeAllListeners('creds.update');
+        old.ev.removeAllListeners('messages.upsert');
+        old.ev.removeAllListeners('lid-mapping.update');
+        await old.end(undefined);
+    } catch (e) {
+        console.warn('[BOT] Fermeture socket:', e.message);
+    }
+}
+
+function cancelScheduledReconnect() {
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+}
+
+function scheduleReconnect(method, phoneNumber, delayMs, { clearAuth = false } = {}) {
+    cancelScheduledReconnect();
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        isLinking = false;
+        qrError = 'Trop de tentatives. Relancez via la console web.';
+        return;
+    }
+    reconnectAttempts++;
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connectToWhatsApp(method, phoneNumber, { force: true, clearAuth });
+    }, delayMs);
+}
+
+async function connectToWhatsApp(method = 'qr', phoneNumber = '', options = {}) {
+    const { force = false, clearAuth = false } = options;
+    if (isConnected && sock && !force) return;
+    if (isLinking && !force) return;
+
+    cancelScheduledReconnect();
+    isLinking = true;
+    linkMethod = method;
+    linkPhone = phoneNumber;
+    if (force) qrError = null;
+
+    await destroySocket();
+    if (clearAuth) {
+        clearAuthSession();
+        currentQrBase64 = null;
+        pairingCode = null;
+    }
+
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+        let version = [2, 3000, 1017578768];
+        try {
+            const latest = await fetchLatestBaileysVersion();
+            version = latest.version;
+        } catch (e) {
+            console.warn('[BOT] Version WA par défaut');
+        }
+
+        sock = makeWASocket({
+            version,
+            auth: state,
+            logger: pino({ level: 'silent' }),
+            printQRInTerminal: true,
+            browser: ['Boxing Center Bot', 'Chrome', '120.0.0.0'],
+            qrTimeout: 60000,
+            connectTimeoutMs: 60000,
+        });
+
+        if (method === 'pairing_code' && phoneNumber && !sock.authState.creds.me) {
+            setTimeout(async () => {
+                if (!sock || isConnected) return;
+                try {
+                    const code = await sock.requestPairingCode(phoneNumber);
+                    pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
+                } catch (err) {
+                    qrError = 'Code d\'association impossible.';
+                    isLinking = false;
+                }
+            }, 3000);
+        }
+
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update;
+            if (qr && method === 'qr') {
+                try {
+                    currentQrBase64 = await qrcode.toDataURL(qr);
+                    qrError = null;
+                    reconnectAttempts = 0;
+                } catch (err) {
+                    console.error('[BOT] QR error:', err);
+                }
+            }
+            if (connection === 'close') {
+                isConnected = false;
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const loggedOut = statusCode === DisconnectReason.loggedOut;
+                await destroySocket();
+                if (loggedOut) {
+                    isLinking = false;
+                    currentQrBase64 = null;
+                    pairingCode = null;
+                    clearAuthSession();
+                    return;
+                }
+                if (isQrExpiredError(lastDisconnect?.error)) {
+                    scheduleReconnect(method, phoneNumber, 3000, { clearAuth: true });
+                    return;
+                }
+                if (statusCode !== DisconnectReason.loggedOut) {
+                    scheduleReconnect(method, phoneNumber, statusCode === DisconnectReason.restartRequired ? 1500 : 5000);
+                } else {
+                    isLinking = false;
+                }
+            } else if (connection === 'open') {
+                isConnected = true;
+                isLinking = false;
+                currentQrBase64 = null;
+                pairingCode = null;
+                qrError = null;
+                reconnectAttempts = 0;
+                cancelScheduledReconnect();
+                try {
+                    const jid = `${normalizePhone(sock.user.id)}@s.whatsapp.net`;
+                    await sock.sendMessage(jid, { text: 'Boxing Center Bot connecté ✅' });
+                } catch (err) {
+                    console.warn('[BOT] Confirmation:', err.message);
+                }
+            }
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+        sock.ev.on('lid-mapping.update', (update) => {
+            if (!update || typeof update !== 'object') return;
+            const entries = Array.isArray(update) ? update : Object.entries(update).map(([lid, pn]) => ({ lid, pn }));
+            for (const entry of entries) {
+                const lid = entry.lid || entry[0];
+                const pn = entry.pn || entry[1];
+                if (lid && pn) storeLidMapping(lid, pn);
+            }
+        });
+        sock.ev.on('messages.upsert', async (m) => {
+            await handleIncomingMessages(m);
+        });
+    } catch (error) {
+        console.error('[BOT] Init error:', error);
+        isLinking = false;
+        qrError = 'Erreur de connexion.';
+        await destroySocket();
+    }
+}
+
+setTimeout(() => {
+    if (hasRegisteredSession()) {
+        connectToWhatsApp('qr');
+    }
+}, 3000);
+
+// --- API ---
+
+app.post('/api/auth/login', (req, res) => {
+    const { password, email } = req.body || {};
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+
+    let user = null;
+    if (normalizedEmail) {
+        user = verifyUser(normalizedEmail, password);
+    }
+
+    if (!user && ADMIN_PASSWORD && password === ADMIN_PASSWORD) {
+        user = {
+            email: normalizedEmail || 'admin@boxingcenter.fr',
+            role: 'admin',
+            name: 'Admin legacy',
+        };
+    }
+
+    if (!user) {
+        return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
+    }
+
+    const token = signSessionToken(user);
+    setAuthCookie(res, token);
+    res.json({ success: true, user, token });
+});
+
+app.get('/api/auth/me', (req, res) => {
+    const user = getSessionUser(req);
+    if (!user) {
+        return res.status(401).json({ error: 'Non authentifié' });
+    }
+    res.json({ user: { email: user.email, role: user.role } });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+    clearAuthCookie(res);
+    res.json({ success: true });
+});
+
+function requireSession(req, res) {
+    const user = getSessionUser(req);
+    if (!user) {
+        res.status(401).json({ error: 'Non authentifié' });
+        return null;
+    }
+    return user;
+}
+
+function requireSuperAdmin(req, res) {
+    const user = requireSession(req, res);
+    if (!user) return null;
+    if (user.role !== 'super_admin') {
+        res.status(403).json({ error: 'Réservé au super administrateur' });
+        return null;
+    }
+    return user;
+}
+
+app.get('/api/users', (req, res) => {
+    if (!requireSuperAdmin(req, res)) return;
+    res.json({ users: listUsers() });
+});
+
+app.post('/api/users', (req, res) => {
+    const actor = requireSuperAdmin(req, res);
+    if (!actor) return;
+    try {
+        const { email, password, role, name } = req.body || {};
+        const created = createUser({ email, password, role, name }, actor.role);
+        res.json({ success: true, user: created });
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+app.delete('/api/users', (req, res) => {
+    const actor = requireSuperAdmin(req, res);
+    if (!actor) return;
+    try {
+        const email = req.body?.email || req.query?.email;
+        const result = deleteUser(email, actor.email, actor.role);
+        res.json({ success: true, ...result });
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+app.get('/api/status', (req, res) => {
+    res.json({
+        connected: isConnected,
+        connecting: isLinking && !isConnected,
+        qr: currentQrBase64,
+        pairingCode,
+        qrError,
+        mandatoryPhone: MANDATORY_ADMIN_PHONE,
+        authorizedPhones: getAllAuthorizedPhones(),
+        siteUrl: SITE_URL,
+    });
+});
+
+app.post('/api/start', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const { method, phone } = req.body;
+    if (isConnected) return res.json({ success: true, message: 'Already connected' });
+    if (method === 'pairing_code' && !phone) {
+        return res.status(400).json({ error: 'Phone required for pairing code' });
+    }
+    cancelScheduledReconnect();
+    reconnectAttempts = 0;
+    qrError = null;
+    const useMethod = method || 'qr';
+    await connectToWhatsApp(useMethod, phone || '', {
+        force: true,
+        clearAuth: useMethod === 'qr' || useMethod === 'pairing_code' || !hasRegisteredSession(),
+    });
+    res.json({ success: true, message: 'Started connection process' });
+});
+
+app.post('/api/logout', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    cancelScheduledReconnect();
+    reconnectAttempts = 0;
+    isLinking = false;
+    if (sock) {
+        try {
+            await sock.logout();
+        } catch (e) {
+            console.warn('[BOT] Logout:', e.message);
+        }
+    }
+    await destroySocket();
+    isConnected = false;
+    currentQrBase64 = null;
+    pairingCode = null;
+    clearAuthSession();
+    res.json({ success: true, message: 'Logged out' });
+});
+
+app.get('/api/managers', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    try {
+        const managers = await fetchManagers({
+            search: req.query.search || '',
+            contactType: req.query.contact_type || req.query.contactType || '',
+        });
+        res.json({ managers });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/managers/stats', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    try {
+        res.json(await fetchManagerStats());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/managers/test', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    try {
+        const manager = await fetchTestManager();
+        res.json({ manager });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/outbound-messages', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    try {
+        const limit = parseInt(req.query.limit || '50', 10);
+        const messages = await fetchOutboundMessages(limit);
+        res.json({ messages });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/inbound-messages', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    try {
+        const unreadOnly = req.query.unread === '1' || req.query.unread === 'true';
+        const messages = await fetchInboundMessages({ unreadOnly });
+        res.json({ messages });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/inbound-messages/mark-read', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    try {
+        const ids = req.body.ids || [];
+        await markInboundRead(ids);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/send-message', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const { phone, message, manager_id: managerId } = req.body;
+    if (!message) return res.status(400).json({ error: 'message required' });
+    if (!phone) return res.status(400).json({ error: 'phone required' });
+    try {
+        const result = await sendWhatsAppMessage(phone, message, managerId || null);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/send-bulk', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const { phones, message } = req.body;
+    if (!Array.isArray(phones) || !phones.length) {
+        return res.status(400).json({ error: 'phones[] required' });
+    }
+    if (!message) return res.status(400).json({ error: 'message required' });
+    const results = { sent: 0, failed: 0, errors: [] };
+    for (const phone of phones) {
+        try {
+            await sendWhatsAppMessage(phone, message);
+            results.sent++;
+            await new Promise((r) => setTimeout(r, 1500));
+        } catch (err) {
+            results.failed++;
+            results.errors.push({ phone, error: err.message });
+        }
+    }
+    res.json({ success: true, ...results });
+});
+
+app.post('/api/send-email', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const { to, subject, html, text, manager_id: managerId } = req.body;
+    if (!to) return res.status(400).json({ error: 'to required' });
+    try {
+        const result = await sendBrevoEmail({ to, subject, html, text, managerId });
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/send-to-managers', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const {
+        manager_ids: managerIds,
+        message,
+        subject,
+        channels = ['whatsapp'],
+        test_only: testOnly,
+    } = req.body;
+
+    if (!message) return res.status(400).json({ error: 'message required' });
+
+    try {
+        let managers = [];
+        if (testOnly) {
+            const test = await fetchTestManager();
+            if (test) managers = [test];
+        } else if (Array.isArray(managerIds) && managerIds.length) {
+            for (const id of managerIds) {
+                const m = await fetchManagerById(id);
+                if (m) managers.push(m);
+            }
+        } else {
+            return res.status(400).json({ error: 'manager_ids or test_only required' });
+        }
+
+        const results = { whatsapp: { sent: 0, failed: 0 }, email: { sent: 0, failed: 0 }, errors: [] };
+
+        for (const mgr of managers) {
+            if (channels.includes('whatsapp') && mgr.telephone) {
+                try {
+                    await sendWhatsAppMessage(mgr.telephone, message, mgr.id);
+                    results.whatsapp.sent++;
+                    await new Promise((r) => setTimeout(r, 1500));
+                } catch (err) {
+                    results.whatsapp.failed++;
+                    results.errors.push({ manager: mgr.nom, channel: 'whatsapp', error: err.message });
+                }
+            }
+            if (channels.includes('email') && mgr.email) {
+                try {
+                    await sendBrevoEmail({
+                        to: mgr.email,
+                        subject: subject || 'Message Boxing Center',
+                        text: message,
+                        managerId: mgr.id,
+                    });
+                    results.email.sent++;
+                } catch (err) {
+                    results.email.failed++;
+                    results.errors.push({ manager: mgr.nom, channel: 'email', error: err.message });
+                }
+            }
+        }
+
+        res.json({ success: true, managers: managers.length, ...results });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+const SPA_ROUTES = /^\/(login|dashboard(\/.*)?)?$/;
+
+app.use((req, res, next) => {
+    if (req.method !== 'GET' || req.path.startsWith('/api/') || req.path.startsWith('/assets/')) {
+        return next();
+    }
+    if (req.path === '/' || SPA_ROUTES.test(req.path)) {
+        const indexPath = path.join(SITE_DIR, 'index.html');
+        if (fs.existsSync(indexPath)) {
+            return res.sendFile(indexPath);
+        }
+    }
+    next();
+});
+
+const PORT = process.env.PORT || 3002;
+app.listen(PORT, () => {
+    console.log(`Boxing Center Bot API on port ${PORT}`);
+    console.log(`Console web: http://localhost:${PORT}/`);
+});

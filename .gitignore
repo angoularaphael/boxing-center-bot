@@ -1,0 +1,5 @@
+.env
+auth_info_baileys/
+node_modules/
+bot_config.json
+users.json
