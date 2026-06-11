@@ -30,6 +30,11 @@ const {
     fetchTestPromoteur,
     fetchPromoteurStats,
     fetchPromoteursForBroadcast,
+    fetchBoxeurs,
+    fetchBoxeurById,
+    fetchTestBoxeur,
+    fetchBoxeurStats,
+    fetchBoxeursForBroadcast,
     fetchUnreadInbound,
     fetchInboundMessages,
     fetchOutboundMessages,
@@ -484,15 +489,16 @@ async function reactToCommand(msg) {
     }
 }
 
-async function sendWhatsAppMessage(phone, message, managerId = null, promoterId = null) {
+async function sendWhatsAppMessage(phone, message, managerId = null, promoterId = null, boxeurId = null) {
     if (!isConnected || !sock) {
         throw new Error('WhatsApp non connecté');
     }
     const cleanNumber = normalizePhone(phone);
     const fullMessage = appendWhatsAppSignature(message);
     const record = await createOutboundMessage({
-        manager_id: promoterId ? null : managerId,
+        manager_id: (promoterId || boxeurId) ? null : managerId,
         promoter_id: promoterId || null,
+        boxeur_id: boxeurId || null,
         channel: 'whatsapp',
         recipient: cleanNumber,
         subject: null,
@@ -936,6 +942,29 @@ app.get('/api/promoteurs/stats', async (req, res) => {
     }
 });
 
+app.get('/api/boxeurs', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    try {
+        const boxeurs = await fetchBoxeurs({
+            search: req.query.search || '',
+            contactType: req.query.contact_type || req.query.contactType || '',
+            categorie: req.query.categorie || '',
+        });
+        res.json({ boxeurs });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/boxeurs/stats', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    try {
+        res.json(await fetchBoxeurStats());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/api/email-status', async (req, res) => {
     if (!verifyApiSecret(req, res)) return;
     try {
@@ -1313,6 +1342,152 @@ app.post('/api/send-to-promoteurs', async (req, res) => {
         }
 
         res.json({ success: true, promoteurs: promoteurs.length, ...results });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+async function deliverToBoxeur(boxeur, { message, subject, html, channels, results }) {
+    const mailSubject = subject || 'Message Boxing Center';
+    const tasks = [];
+
+    if (channels.includes('whatsapp')) {
+        tasks.push((async () => {
+            if (!boxeur.telephone) {
+                results.whatsapp.skipped++;
+                return;
+            }
+            try {
+                await sendWhatsAppMessage(boxeur.telephone, message, null, null, boxeur.id);
+                results.whatsapp.sent++;
+                results.destinations.push({
+                    channel: 'whatsapp',
+                    to: `+${normalizePhone(boxeur.telephone)}`,
+                    boxeur: boxeur.nom,
+                });
+            } catch (err) {
+                results.whatsapp.failed++;
+                results.errors.push({ boxeur: boxeur.nom, channel: 'whatsapp', error: err.message });
+            }
+        })());
+    }
+
+    if (channels.includes('email')) {
+        tasks.push((async () => {
+            if (!boxeur.email) {
+                results.email.skipped++;
+                return;
+            }
+            try {
+                const emailHtml = html || buildEmailHtml({
+                    subject: mailSubject,
+                    body: message,
+                    recipientName: boxeur.nom,
+                });
+                await sendBrevoEmail({
+                    to: boxeur.email,
+                    subject: mailSubject,
+                    html: emailHtml,
+                    text: message,
+                    boxeurId: boxeur.id,
+                    recipientName: boxeur.nom,
+                });
+                results.email.sent++;
+                results.destinations.push({
+                    channel: 'email',
+                    to: boxeur.email,
+                    boxeur: boxeur.nom,
+                });
+            } catch (err) {
+                results.email.failed++;
+                results.errors.push({ boxeur: boxeur.nom, channel: 'email', error: err.message });
+            }
+        })());
+    }
+
+    await Promise.all(tasks);
+}
+
+app.post('/api/send-to-boxeurs', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const {
+        boxeur_ids: boxeurIds,
+        message,
+        subject,
+        html,
+        channels = ['whatsapp'],
+        test_only: testOnly,
+        broadcast,
+        categorie,
+    } = req.body;
+
+    if (!message) return res.status(400).json({ error: 'message required' });
+    if (!Array.isArray(channels) || !channels.length) {
+        return res.status(400).json({ error: 'channels required' });
+    }
+
+    try {
+        let boxeurs = [];
+        if (testOnly) {
+            const test = await fetchTestBoxeur();
+            if (test) {
+                boxeurs = [test];
+            } else {
+                const fallback = await fetchTestManager();
+                boxeurs = fallback
+                    ? [fallback]
+                    : [{
+                        nom: 'atangana',
+                        email: TEST_TARGET_EMAIL,
+                        telephone: TEST_TARGET_PHONE,
+                        id: null,
+                    }];
+            }
+        } else if (broadcast) {
+            if (broadcast === 'email') {
+                boxeurs = await fetchBoxeursForBroadcast('email', categorie || '');
+            } else if (broadcast === 'phone' || broadcast === 'whatsapp') {
+                boxeurs = await fetchBoxeursForBroadcast('whatsapp', categorie || '');
+            } else if (broadcast === 'all') {
+                boxeurs = await fetchBoxeurs({ categorie: categorie || '' });
+            } else {
+                return res.status(400).json({ error: 'broadcast invalide (email, phone, all)' });
+            }
+        } else if (Array.isArray(boxeurIds) && boxeurIds.length) {
+            for (const id of boxeurIds) {
+                const b = await fetchBoxeurById(id);
+                if (b) boxeurs.push(b);
+            }
+        } else {
+            return res.status(400).json({ error: 'boxeur_ids, broadcast ou test_only requis' });
+        }
+
+        if (!boxeurs.length) {
+            return res.status(400).json({ error: 'Aucun boxeur trouvé pour cet envoi' });
+        }
+
+        const results = {
+            whatsapp: { sent: 0, failed: 0, skipped: 0 },
+            email: { sent: 0, failed: 0, skipped: 0 },
+            errors: [],
+            destinations: [],
+        };
+
+        const fastBatch = testOnly || boxeurs.length <= 5;
+        const ctx = { message, subject, html, channels, results };
+
+        if (fastBatch) {
+            await Promise.all(boxeurs.map((boxeur) => deliverToBoxeur(boxeur, ctx)));
+        } else {
+            for (const boxeur of boxeurs) {
+                await deliverToBoxeur(boxeur, ctx);
+                if (channels.includes('whatsapp')) {
+                    await new Promise((r) => setTimeout(r, 1500));
+                }
+            }
+        }
+
+        res.json({ success: true, boxeurs: boxeurs.length, ...results });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
