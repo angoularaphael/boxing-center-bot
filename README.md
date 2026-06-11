@@ -120,3 +120,12 @@ npm start
 ## Variables d'environnement
 
 Voir `.env.example` pour la liste complète.
+
+## Déploiement Bothosting
+
+1. Sur Bothosting, créer un projet Node.js
+2. Copier `bothosting-index.js` → renommer en `index.js` à la racine
+3. Configurer les variables (Supabase, Brevo, super admin, CORS) — **voir [BOTHOSTING.md](./BOTHOSTING.md)**
+4. Démarrer le projet
+
+Le script clone ce repo, génère `.env`, installe et lance le bot.
