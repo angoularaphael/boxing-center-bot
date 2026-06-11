@@ -11,7 +11,10 @@ const qrcode = require('qrcode');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-require('dotenv').config();
+
+// Bothosting : le .env éditable est à /home/container/.env (parent du clone)
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+require('dotenv').config({ path: path.join(__dirname, '..', '.env'), override: true });
 
 const {
     fetchManagers,

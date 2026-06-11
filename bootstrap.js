@@ -85,6 +85,23 @@ function buildEnv() {
     return `${lines.join('\n')}\n`;
 }
 
+const ROOT_ENV = path.join(__dirname, '.env');
+const APP_ENV = path.join(APP_DIR, '.env');
+
+/** Utilise /home/container/.env si présent (éditeur Files Bothosting). */
+function syncEnvFile() {
+    if (fs.existsSync(ROOT_ENV)) {
+        fs.copyFileSync(ROOT_ENV, APP_ENV);
+        console.log(`✅ .env — copié depuis ${ROOT_ENV}`);
+        try {
+            require('dotenv').config({ path: ROOT_ENV });
+        } catch { /* dotenv optionnel dans bootstrap */ }
+        return;
+    }
+    fs.writeFileSync(APP_ENV, buildEnv(), 'utf8');
+    console.log('✅ .env — généré depuis variables panneau (pas de .env racine)');
+}
+
 async function bootstrap() {
     if (!fs.existsSync(APP_DIR)) {
         if (!runCommand(`git clone ${GITHUB_REPO_URL} ${APP_DIR_NAME}`)) process.exit(1);
@@ -92,8 +109,7 @@ async function bootstrap() {
         runCommand('git pull', APP_DIR);
     }
 
-    fs.writeFileSync(path.join(APP_DIR, '.env'), buildEnv(), 'utf8');
-    console.log('✅ .env généré');
+    syncEnvFile();
 
     if (!runCommand('npm install --omit=dev', APP_DIR)) process.exit(1);
 
