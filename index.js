@@ -987,6 +987,67 @@ app.post('/api/send-email', async (req, res) => {
     }
 });
 
+async function deliverToManager(mgr, { message, subject, html, channels, results }) {
+    const mailSubject = subject || 'Message Boxing Center';
+    const tasks = [];
+
+    if (channels.includes('whatsapp')) {
+        tasks.push((async () => {
+            if (!mgr.telephone) {
+                results.whatsapp.skipped++;
+                return;
+            }
+            try {
+                await sendWhatsAppMessage(mgr.telephone, message, mgr.id);
+                results.whatsapp.sent++;
+                results.destinations.push({
+                    channel: 'whatsapp',
+                    to: `+${normalizePhone(mgr.telephone)}`,
+                    manager: mgr.nom,
+                });
+            } catch (err) {
+                results.whatsapp.failed++;
+                results.errors.push({ manager: mgr.nom, channel: 'whatsapp', error: err.message });
+            }
+        })());
+    }
+
+    if (channels.includes('email')) {
+        tasks.push((async () => {
+            if (!mgr.email) {
+                results.email.skipped++;
+                return;
+            }
+            try {
+                const emailHtml = html || buildEmailHtml({
+                    subject: mailSubject,
+                    body: message,
+                    recipientName: mgr.nom,
+                });
+                await sendBrevoEmail({
+                    to: mgr.email,
+                    subject: mailSubject,
+                    html: emailHtml,
+                    text: message,
+                    managerId: mgr.id,
+                    recipientName: mgr.nom,
+                });
+                results.email.sent++;
+                results.destinations.push({
+                    channel: 'email',
+                    to: mgr.email,
+                    manager: mgr.nom,
+                });
+            } catch (err) {
+                results.email.failed++;
+                results.errors.push({ manager: mgr.nom, channel: 'email', error: err.message });
+            }
+        })());
+    }
+
+    await Promise.all(tasks);
+}
+
 app.post('/api/send-to-managers', async (req, res) => {
     if (!verifyApiSecret(req, res)) return;
     const {
@@ -1048,87 +1109,50 @@ app.post('/api/send-to-managers', async (req, res) => {
             destinations: [],
         };
 
-        for (const mgr of managers) {
-            if (channels.includes('whatsapp')) {
-                if (!mgr.telephone) {
-                    results.whatsapp.skipped++;
-                } else {
+        const fastBatch = testOnly || managers.length <= 5;
+        const ctx = { message, subject, html, channels, results };
+
+        if (fastBatch) {
+            const jobs = managers.map((mgr) => deliverToManager(mgr, ctx));
+            if (testOnly && channels.includes('email') && RECEPTION_EMAIL) {
+                const copyTo = RECEPTION_EMAIL.trim().toLowerCase();
+                jobs.push((async () => {
                     try {
-                        await sendWhatsAppMessage(mgr.telephone, message, mgr.id);
-                        results.whatsapp.sent++;
-                        results.destinations.push({
-                            channel: 'whatsapp',
-                            to: `+${normalizePhone(mgr.telephone)}`,
-                            manager: mgr.nom,
-                        });
-                        await new Promise((r) => setTimeout(r, 1500));
-                    } catch (err) {
-                        results.whatsapp.failed++;
-                        results.errors.push({ manager: mgr.nom, channel: 'whatsapp', error: err.message });
-                    }
-                }
-            }
-            if (channels.includes('email')) {
-                if (!mgr.email) {
-                    results.email.skipped++;
-                } else {
-                    try {
-                        const emailHtml = html || buildEmailHtml({
+                        const copyHtml = html || buildEmailHtml({
                             subject: subject || 'Message Boxing Center',
                             body: message,
-                            recipientName: mgr.nom,
+                            recipientName: 'Copie test',
                         });
                         await sendBrevoEmail({
-                            to: mgr.email,
-                            subject: subject || 'Message Boxing Center',
-                            html: emailHtml,
+                            to: copyTo,
+                            subject: `[Copie test] ${subject || 'Message Boxing Center'}`,
+                            html: copyHtml,
                             text: message,
-                            managerId: mgr.id,
-                            recipientName: mgr.nom,
+                            managerId: null,
+                            recipientName: 'Copie test',
                         });
                         results.email.sent++;
                         results.destinations.push({
                             channel: 'email',
-                            to: mgr.email,
-                            manager: mgr.nom,
+                            to: copyTo,
+                            manager: 'copie réception (test)',
                         });
                     } catch (err) {
                         results.email.failed++;
-                        results.errors.push({ manager: mgr.nom, channel: 'email', error: err.message });
+                        results.errors.push({
+                            manager: 'copie réception',
+                            channel: 'email',
+                            error: err.message,
+                        });
                     }
-                }
+                })());
             }
-        }
-
-        if (testOnly && channels.includes('email') && RECEPTION_EMAIL) {
-            const copyTo = RECEPTION_EMAIL.trim().toLowerCase();
-            const alreadySent = results.destinations.some(
-                (d) => d.channel === 'email' && d.to?.toLowerCase() === copyTo
-            );
-            if (!alreadySent) {
-                try {
-                    const copyHtml = html || buildEmailHtml({
-                        subject: subject || 'Message Boxing Center',
-                        body: message,
-                        recipientName: 'Copie test',
-                    });
-                    await sendBrevoEmail({
-                        to: RECEPTION_EMAIL,
-                        subject: `[Copie test] ${subject || 'Message Boxing Center'}`,
-                        html: copyHtml,
-                        text: message,
-                        managerId: null,
-                        recipientName: 'Copie test',
-                    });
-                    results.email.sent++;
-                    results.destinations.push({
-                        channel: 'email',
-                        to: RECEPTION_EMAIL,
-                        manager: 'copie réception (test)',
-                    });
-                } catch (err) {
-                    results.email.failed++;
-                    results.errors.push({ manager: 'copie réception', channel: 'email', error: err.message });
+            await Promise.all(jobs);
+        } else {
+            for (const mgr of managers) {
+                await deliverToManager(mgr, ctx);
+                if (channels.includes('whatsapp')) {
+                    await new Promise((r) => setTimeout(r, 1500));
                 }
             }
         }
