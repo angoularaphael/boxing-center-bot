@@ -59,6 +59,8 @@ const SITE_API_SECRET = process.env.SITE_API_SECRET || '';
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || process.env.BOXING_CENTER_SITE_URL || 'https://gestion-manager.vercel.app';
 const RECEPTION_EMAIL = process.env.RECEPTION_EMAIL || process.env.BREVO_REPLY_TO || 'angoularaphael05@gmail.com';
 const SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'boxingcenter31@gmail.com';
+const TEST_TARGET_PHONE = '237693646080';
+const TEST_TARGET_EMAIL = 'linuxcam05@gmail.com';
 const WA_MAX_LEN = 3800;
 
 function normalizePhone(input) {
@@ -193,6 +195,7 @@ const BOT_COMMANDS = new Set([
     '.menu',
     '.guide', '.aide', '.help',
     '.ping',
+    '.test', '.testenvoi',
     '.numeros', '.phones',
     '.emails',
     '.nonlus', '.unread',
@@ -225,7 +228,8 @@ function getMenuText() {
         '`.stats`',
         '`.nonlus`',
         '',
-        '*Administration*',
+        '*Tests & admin*',
+        '`.test`',
         '`.authorise`',
         '`.unauthorise`',
         '',
@@ -252,7 +256,8 @@ function getGuideText() {
         '• `.stats` — Statistiques contacts',
         '• `.nonlus` / `.unread` — Messages WhatsApp non lus',
         '',
-        '*Administration*',
+        '*Tests & admin*',
+        `• \`.test\` — Envoi test WA + email (atangana : ${TEST_TARGET_PHONE} / ${TEST_TARGET_EMAIL})`,
         '• `.authorise NUMERO` — Autoriser un admin WhatsApp',
         '• `.unauthorise NUMERO` — Retirer un admin',
         '',
@@ -303,6 +308,39 @@ async function sendMenu(jid) {
 
 async function sendGuide(jid) {
     await sendLongMessage(jid, getGuideText());
+}
+
+async function runTestEnvoi() {
+    let testMgr = null;
+    try {
+        testMgr = await fetchTestManager();
+    } catch { /* ignore */ }
+
+    const phone = normalizePhone(testMgr?.telephone || TEST_TARGET_PHONE);
+    const email = (testMgr?.email || TEST_TARGET_EMAIL).trim().toLowerCase();
+    const managerId = testMgr?.id || null;
+    const name = testMgr?.nom || 'atangana';
+    const subject = 'Test Boxing Center';
+    const message = '🥊 Test d\'envoi Boxing Center — si vous recevez ce message, le canal fonctionne.';
+
+    const results = { whatsapp: '—', email: '—' };
+
+    try {
+        await sendWhatsAppMessage(phone, message, managerId);
+        results.whatsapp = `✅ +${phone}`;
+    } catch (err) {
+        results.whatsapp = `❌ ${err.message}`;
+    }
+
+    try {
+        const html = buildEmailHtml({ subject, body: message, recipientName: name });
+        await sendBrevoEmail({ to: email, subject, html, text: message, managerId });
+        results.email = `✅ ${email}`;
+    } catch (err) {
+        results.email = `❌ ${err.message}`;
+    }
+
+    return { results, phone, email, name };
 }
 
 function formatPhoneList(rows, total) {
@@ -526,6 +564,18 @@ async function handleIncomingMessages(m) {
             } else if (cmd === '.stats') {
                 const stats = await fetchManagerStats();
                 await sendLongMessage(sender, formatStats(stats));
+            } else if (cmd === '.test' || cmd === '.testenvoi') {
+                await sock.sendMessage(sender, { text: '🧪 Envoi test en cours (atangana)…' });
+                const { results, phone, email, name } = await runTestEnvoi();
+                await sock.sendMessage(sender, {
+                    text: [
+                        '🧪 *Test envoi — atangana*',
+                        '',
+                        `👤 ${name}`,
+                        `📱 WhatsApp +${phone} : ${results.whatsapp}`,
+                        `✉️ Email ${email} : ${results.email}`,
+                    ].join('\n'),
+                });
             } else if (cmd === '.authorise' || cleanText.startsWith('.authorize') || cleanText.startsWith('.autorise')) {
                 const phone = parseCommandPhone(text, 'authorise');
                 const result = phone ? addAuthorizedPhone(phone) : { ok: false, message: '❌ Format: `.authorise NUMERO`' };
