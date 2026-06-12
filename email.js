@@ -250,7 +250,16 @@ async function sendBrevoEmail({
     });
 
     try {
-        if (useSmtp()) {
+        let via = 'brevo-smtp';
+        if (useRestApi()) {
+            await sendViaRestApi({
+                to,
+                subject: mailSubject,
+                html: finalHtml,
+                text: bodyText,
+            });
+            via = 'brevo-api';
+        } else if (useSmtp()) {
             await sendViaSmtp({
                 to,
                 subject: mailSubject,
@@ -259,12 +268,7 @@ async function sendBrevoEmail({
                 attachments,
             });
         } else {
-            await sendViaRestApi({
-                to,
-                subject: mailSubject,
-                html: finalHtml,
-                text: bodyText,
-            });
+            throw new Error('Brevo non configuré');
         }
 
         await updateOutboundMessage(record.id, {
@@ -272,7 +276,7 @@ async function sendBrevoEmail({
             sent_at: new Date().toISOString(),
         });
 
-        return { success: true, id: record.id };
+        return { success: true, id: record.id, via };
     } catch (err) {
         let message = err.response?.data?.message || err.message;
         const code = err.response?.data?.code || '';
