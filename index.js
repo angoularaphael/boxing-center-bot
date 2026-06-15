@@ -49,17 +49,19 @@ const {
 } = require('./supabase');
 const { sendBrevoEmail, verifyEmailSetup } = require('./email');
 const {
+    getGroupeChabaneContacts,
+    resolveGroupeChabaneForSend,
+} = require('./groupeChabane');
+const {
+    buildContactsCsv,
+    extractContactsFromIncomingMessage,
+    formatContactsCsvSummary,
+} = require('./contactsCsv');
+const {
     appendWhatsAppSignature,
     buildEmailHtml,
     WA_CAPTION_MAX,
 } = require('./brand');
-const {
-    parseContactText,
-    extractContactsFromProto,
-    getQuotedMessage,
-    contactsToCsv,
-    summarizeContacts,
-} = require('./contacts-parser');
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -79,12 +81,8 @@ const MAX_RECONNECT_ATTEMPTS = 6;
 const lidPhoneCache = new Map();
 
 const AUTH_DIR = path.join(__dirname, 'auth_info_baileys');
-const EXPORT_DIR = path.join(__dirname, 'data', 'exports');
 if (!fs.existsSync(AUTH_DIR)) {
     fs.mkdirSync(AUTH_DIR);
-}
-if (!fs.existsSync(EXPORT_DIR)) {
-    fs.mkdirSync(EXPORT_DIR, { recursive: true });
 }
 
 const CONFIG_FILE = path.join(__dirname, 'bot_config.json');
@@ -244,7 +242,8 @@ const BOT_COMMANDS = new Set([
     '.stats',
     '.authorise', '.authorize', '.autorise',
     '.unauthorise', '.unauthorize', '.unautorise',
-    '.cs', '.chabane',
+    '.contacts-csv', '.contactscsv', '.export-contacts',
+    '.groupe-chabane-numeros', '.groupe-chabane-phones',
 ]);
 
 function isKnownBotCommand(cleanText, cmd) {
@@ -281,13 +280,16 @@ function getMenuText() {
         '`.box-pro-numeros`',
         '`.box-amateur-numeros`',
         '',
+        '*Groupe Chabane*',
+        '`.groupe-chabane-numeros`',
+        '',
+        '*Outils*',
+        '`.contacts-csv` — CSV depuis contacts (répondre au message)',
+        '',
         '*Tests & admin*',
         '`.test`',
         '`.authorise`',
         '`.unauthorise`',
-        '',
-        '*Groupe Chabane*',
-        '`.cs` — Répondre à un message de contacts → CSV',
         '',
         `🌐 Console : ${SITE_URL}`,
         `📧 Réception : ${RECEPTION_EMAIL}`,
@@ -322,14 +324,16 @@ function getGuideText() {
         '• `.box-pro-numeros` — Boxeurs pro avec téléphone',
         '• `.box-amateur-numeros` — Boxeurs amateur avec téléphone',
         '',
+        '*Groupe Chabane*',
+        '• `.groupe-chabane-numeros` — Contacts du Groupe Chabane',
+        '',
+        '*Outils*',
+        '• `.contacts-csv` — Répondre à un message contenant des contacts pour recevoir un CSV',
+        '',
         '*Tests & admin*',
         `• \`.test\` — Envoi test WA + email (atangana : ${TEST_TARGET_PHONE} / ${TEST_TARGET_EMAIL})`,
         '• `.authorise NUMERO` — Autoriser un admin WhatsApp',
         '• `.unauthorise NUMERO` — Retirer un admin',
-        '',
-        '*Groupe Chabane — import contacts*',
-        '• `.cs` ou `.chabane` — *en réponse* à un message contenant des contacts WhatsApp (ou du texte collé), génère un CSV nom + téléphone',
-        '• Tu peux aussi envoyer `.cs` suivi du texte des contacts dans le même message',
         '',
         '*Console web*',
         `• ${SITE_URL}`,
@@ -535,66 +539,6 @@ function removeAuthorizedPhone(phone) {
     return { ok: true, message: `✅ ${phone} retiré.` };
 }
 
-async function handleGroupeChabaneExport(sender, msg, text) {
-    const quoted = getQuotedMessage(msg);
-    let contacts = [];
-
-    if (quoted) {
-        contacts = extractContactsFromProto(quoted);
-    } else {
-        const pasted = text.trim().replace(/^\.(cs|chabane)\s*/i, '').trim();
-        if (pasted) {
-            contacts = parseContactText(pasted);
-        }
-    }
-
-    if (!contacts.length) {
-        await sock.sendMessage(sender, {
-            text: [
-                '❌ *Aucun contact détecté.*',
-                '',
-                'Utilisation :',
-                '1️⃣ Le coach t\'envoie une liste de contacts sur WhatsApp',
-                '2️⃣ *Réponds* à ce message avec `.cs`',
-                '',
-                'Ou envoie directement `.cs` suivi des contacts en texte.',
-                'Le bot renvoie un fichier CSV (nom, téléphone, groupe).',
-            ].join('\n'),
-        });
-        return;
-    }
-
-    const stats = summarizeContacts(contacts);
-    const csv = contactsToCsv(contacts);
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-    const fileName = `groupe-chabane-${stamp}.csv`;
-    const filePath = path.join(EXPORT_DIR, fileName);
-    fs.writeFileSync(filePath, csv, 'utf8');
-
-    const preview = contacts
-        .slice(0, 8)
-        .map((c, i) => `${i + 1}. ${c.name || '—'} · ${c.phone || '—'}`)
-        .join('\n');
-
-    await sock.sendMessage(sender, {
-        document: fs.readFileSync(filePath),
-        mimetype: 'text/csv',
-        fileName,
-        caption: [
-            '📇 *Groupe Chabane — export CSV*',
-            '',
-            `✅ *${stats.total}* contact(s) trouvé(s)`,
-            `📱 ${stats.withPhone} avec numéro`,
-            `👤 ${stats.withName} avec nom`,
-            '',
-            preview,
-            contacts.length > 8 ? `\n… et ${contacts.length - 8} autre(s)` : '',
-            '',
-            'Importez ce CSV dans la console ou Excel.',
-        ].filter(Boolean).join('\n'),
-    });
-}
-
 async function reactToCommand(msg) {
     if (!sock || !msg?.key?.remoteJid) return;
     try {
@@ -761,8 +705,6 @@ async function handleIncomingMessages(m) {
                         `✉️ Email ${email} : ${results.email}`,
                     ].join('\n'),
                 });
-            } else if (cmd === '.cs' || cmd === '.chabane') {
-                await handleGroupeChabaneExport(sender, msg, text);
             } else if (cmd === '.authorise' || cleanText.startsWith('.authorize') || cleanText.startsWith('.autorise')) {
                 const phone = parseCommandPhone(text, 'authorise');
                 const result = phone ? addAuthorizedPhone(phone) : { ok: false, message: '❌ Format: `.authorise NUMERO`' };
@@ -775,6 +717,38 @@ async function handleIncomingMessages(m) {
                 const phone = parseCommandPhone(text, 'unauthorise');
                 const result = phone ? removeAuthorizedPhone(phone) : { ok: false, message: '❌ Format: `.unauthorise NUMERO`' };
                 await sock.sendMessage(sender, { text: result.message });
+            } else if (cmd === '.groupe-chabane-numeros' || cmd === '.groupe-chabane-phones') {
+                const rows = getGroupeChabaneContacts();
+                const sample = rows.slice(0, 15).map((c) => ({
+                    nom: c.nom || c.telephone,
+                    telephone: c.telephone,
+                }));
+                await sendLongMessage(sender, formatPhoneList(sample, rows.length, 'Groupe Chabane'));
+            } else if (
+                cmd === '.contacts-csv' ||
+                cmd === '.contactscsv' ||
+                cmd === '.export-contacts'
+            ) {
+                const contacts = extractContactsFromIncomingMessage(msg, { preferQuoted: true });
+                if (!contacts.length) {
+                    await sock.sendMessage(sender, {
+                        text: [
+                            '❌ Aucun contact trouvé.',
+                            '',
+                            'Répondez à un message contenant des contacts WhatsApp (cartes ou vCard), puis tapez `.contacts-csv`.',
+                        ].join('\n'),
+                    });
+                    continue;
+                }
+                const csv = buildContactsCsv(contacts);
+                const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+                await sock.sendMessage(sender, { text: formatContactsCsvSummary(contacts) });
+                await sock.sendMessage(sender, {
+                    document: Buffer.from(csv, 'utf8'),
+                    mimetype: 'text/csv',
+                    fileName: `contacts-${stamp}.csv`,
+                    caption: `${contacts.length} contact(s)`,
+                });
             }
         } catch (err) {
             console.error('[BOT] Erreur message:', err);
@@ -1637,6 +1611,93 @@ app.post('/api/send-to-boxeurs', async (req, res) => {
         }
 
         res.json({ success: true, boxeurs: boxeurs.length, ...results });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+async function deliverToGroupeChabaneContact(contact, { message, channels, results }) {
+    const tasks = [];
+    if (channels.includes('whatsapp')) {
+        tasks.push((async () => {
+            if (!contact.telephone) {
+                results.whatsapp.skipped++;
+                return;
+            }
+            try {
+                await sendWhatsAppMessage(contact.telephone, message);
+                results.whatsapp.sent++;
+                results.destinations.push({
+                    channel: 'whatsapp',
+                    to: `+${normalizePhone(contact.telephone)}`,
+                    contact: contact.nom || contact.telephone,
+                });
+            } catch (err) {
+                results.whatsapp.failed++;
+                results.errors.push({
+                    contact: contact.nom || contact.telephone,
+                    channel: 'whatsapp',
+                    error: err.message,
+                });
+            }
+        })());
+    }
+    await Promise.all(tasks);
+}
+
+app.post('/api/send-to-groupe-chabane', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const {
+        contact_ids: contactIds,
+        message,
+        channels = ['whatsapp'],
+        test_only: testOnly,
+        broadcast,
+    } = req.body;
+
+    if (!message) return res.status(400).json({ error: 'message required' });
+    if (!Array.isArray(channels) || !channels.length) {
+        return res.status(400).json({ error: 'channels required' });
+    }
+    if (channels.includes('email')) {
+        return res.status(400).json({ error: 'Groupe Chabane : WhatsApp uniquement' });
+    }
+
+    try {
+        const contacts = resolveGroupeChabaneForSend({
+            contact_ids: contactIds,
+            test_only: testOnly,
+            broadcast,
+        });
+
+        if (!contacts.length) {
+            return res.status(400).json({
+                error: 'contact_ids, broadcast=all ou test_only requis',
+            });
+        }
+
+        const results = {
+            whatsapp: { sent: 0, failed: 0, skipped: 0 },
+            email: { sent: 0, failed: 0, skipped: 0 },
+            errors: [],
+            destinations: [],
+        };
+
+        const fastBatch = testOnly || contacts.length <= 5;
+        const ctx = { message, channels, results };
+
+        if (fastBatch) {
+            await Promise.all(contacts.map((contact) => deliverToGroupeChabaneContact(contact, ctx)));
+        } else {
+            for (const contact of contacts) {
+                await deliverToGroupeChabaneContact(contact, ctx);
+                if (channels.includes('whatsapp')) {
+                    await new Promise((r) => setTimeout(r, 1500));
+                }
+            }
+        }
+
+        res.json({ success: true, contacts: contacts.length, ...results });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
