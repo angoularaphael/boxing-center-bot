@@ -53,6 +53,13 @@ const {
     buildEmailHtml,
     WA_CAPTION_MAX,
 } = require('./brand');
+const {
+    parseContactText,
+    extractContactsFromProto,
+    getQuotedMessage,
+    contactsToCsv,
+    summarizeContacts,
+} = require('./contacts-parser');
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -72,8 +79,12 @@ const MAX_RECONNECT_ATTEMPTS = 6;
 const lidPhoneCache = new Map();
 
 const AUTH_DIR = path.join(__dirname, 'auth_info_baileys');
+const EXPORT_DIR = path.join(__dirname, 'data', 'exports');
 if (!fs.existsSync(AUTH_DIR)) {
     fs.mkdirSync(AUTH_DIR);
+}
+if (!fs.existsSync(EXPORT_DIR)) {
+    fs.mkdirSync(EXPORT_DIR, { recursive: true });
 }
 
 const CONFIG_FILE = path.join(__dirname, 'bot_config.json');
@@ -233,6 +244,7 @@ const BOT_COMMANDS = new Set([
     '.stats',
     '.authorise', '.authorize', '.autorise',
     '.unauthorise', '.unauthorize', '.unautorise',
+    '.cs', '.chabane',
 ]);
 
 function isKnownBotCommand(cleanText, cmd) {
@@ -274,6 +286,9 @@ function getMenuText() {
         '`.authorise`',
         '`.unauthorise`',
         '',
+        '*Groupe Chabane*',
+        '`.cs` — Répondre à un message de contacts → CSV',
+        '',
         `🌐 Console : ${SITE_URL}`,
         `📧 Réception : ${RECEPTION_EMAIL}`,
         `📤 Envoi : ${SENDER_EMAIL}`,
@@ -311,6 +326,10 @@ function getGuideText() {
         `• \`.test\` — Envoi test WA + email (atangana : ${TEST_TARGET_PHONE} / ${TEST_TARGET_EMAIL})`,
         '• `.authorise NUMERO` — Autoriser un admin WhatsApp',
         '• `.unauthorise NUMERO` — Retirer un admin',
+        '',
+        '*Groupe Chabane — import contacts*',
+        '• `.cs` ou `.chabane` — *en réponse* à un message contenant des contacts WhatsApp (ou du texte collé), génère un CSV nom + téléphone',
+        '• Tu peux aussi envoyer `.cs` suivi du texte des contacts dans le même message',
         '',
         '*Console web*',
         `• ${SITE_URL}`,
@@ -516,6 +535,66 @@ function removeAuthorizedPhone(phone) {
     return { ok: true, message: `✅ ${phone} retiré.` };
 }
 
+async function handleGroupeChabaneExport(sender, msg, text) {
+    const quoted = getQuotedMessage(msg);
+    let contacts = [];
+
+    if (quoted) {
+        contacts = extractContactsFromProto(quoted);
+    } else {
+        const pasted = text.trim().replace(/^\.(cs|chabane)\s*/i, '').trim();
+        if (pasted) {
+            contacts = parseContactText(pasted);
+        }
+    }
+
+    if (!contacts.length) {
+        await sock.sendMessage(sender, {
+            text: [
+                '❌ *Aucun contact détecté.*',
+                '',
+                'Utilisation :',
+                '1️⃣ Le coach t\'envoie une liste de contacts sur WhatsApp',
+                '2️⃣ *Réponds* à ce message avec `.cs`',
+                '',
+                'Ou envoie directement `.cs` suivi des contacts en texte.',
+                'Le bot renvoie un fichier CSV (nom, téléphone, groupe).',
+            ].join('\n'),
+        });
+        return;
+    }
+
+    const stats = summarizeContacts(contacts);
+    const csv = contactsToCsv(contacts);
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const fileName = `groupe-chabane-${stamp}.csv`;
+    const filePath = path.join(EXPORT_DIR, fileName);
+    fs.writeFileSync(filePath, csv, 'utf8');
+
+    const preview = contacts
+        .slice(0, 8)
+        .map((c, i) => `${i + 1}. ${c.name || '—'} · ${c.phone || '—'}`)
+        .join('\n');
+
+    await sock.sendMessage(sender, {
+        document: fs.readFileSync(filePath),
+        mimetype: 'text/csv',
+        fileName,
+        caption: [
+            '📇 *Groupe Chabane — export CSV*',
+            '',
+            `✅ *${stats.total}* contact(s) trouvé(s)`,
+            `📱 ${stats.withPhone} avec numéro`,
+            `👤 ${stats.withName} avec nom`,
+            '',
+            preview,
+            contacts.length > 8 ? `\n… et ${contacts.length - 8} autre(s)` : '',
+            '',
+            'Importez ce CSV dans la console ou Excel.',
+        ].filter(Boolean).join('\n'),
+    });
+}
+
 async function reactToCommand(msg) {
     if (!sock || !msg?.key?.remoteJid) return;
     try {
@@ -682,6 +761,8 @@ async function handleIncomingMessages(m) {
                         `✉️ Email ${email} : ${results.email}`,
                     ].join('\n'),
                 });
+            } else if (cmd === '.cs' || cmd === '.chabane') {
+                await handleGroupeChabaneExport(sender, msg, text);
             } else if (cmd === '.authorise' || cleanText.startsWith('.authorize') || cleanText.startsWith('.autorise')) {
                 const phone = parseCommandPhone(text, 'authorise');
                 const result = phone ? addAuthorizedPhone(phone) : { ok: false, message: '❌ Format: `.authorise NUMERO`' };
