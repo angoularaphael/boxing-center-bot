@@ -126,11 +126,20 @@ function migrateConfig(parsed) {
     return { authorizedPhones };
 }
 
+function getEnvAuthorizedPhones() {
+    const raw = process.env.ADMIN_PHONES || '';
+    return raw
+        .split(/[,;\s]+/)
+        .map(normalizePhone)
+        .filter((p) => p && isValidPhoneDigits(p));
+}
+
 function getAllAuthorizedPhones() {
+    const envPhones = getEnvAuthorizedPhones();
     const extra = (botConfig.authorizedPhones || [])
         .map(normalizePhone)
         .filter((p) => p && p !== MANDATORY_ADMIN_PHONE);
-    return [...new Set([MANDATORY_ADMIN_PHONE, ...extra])];
+    return [...new Set([MANDATORY_ADMIN_PHONE, ...envPhones, ...extra])];
 }
 
 if (fs.existsSync(CONFIG_FILE)) {
@@ -223,6 +232,26 @@ function isSenderAuthorized(msg) {
     const senderPhone = resolveSenderPhone(msg);
     if (!senderPhone) return false;
     return getAllAuthorizedPhones().includes(senderPhone);
+}
+
+function buildUnauthorizedReply() {
+    const email = RECEPTION_EMAIL;
+    const body = [
+        'Bonjour,',
+        '',
+        'Ce numéro WhatsApp est réservé à l\'équipe Boxing Center. Nous ne pouvons pas répondre aux messages depuis ce contact.',
+        '',
+        `Pour toute question, merci de nous écrire à ${email}`,
+        '',
+        '—',
+        '',
+        'Hello,',
+        '',
+        'This WhatsApp line is reserved for the Boxing Center team. We are unable to respond to messages from this number.',
+        '',
+        `For any enquiry, please contact us at ${email}`,
+    ].join('\n');
+    return appendWhatsAppSignature(body);
 }
 
 const BOT_COMMANDS = new Set([
@@ -607,6 +636,18 @@ async function handleIncomingMessages(m) {
             const cleanText = text.trim().toLowerCase();
             const isCommand = cleanText.startsWith('.');
 
+            if (!isSenderAuthorized(msg)) {
+                if (senderPhone) {
+                    await saveInboundMessage({
+                        fromPhone: senderPhone,
+                        fromName: msg.pushName || null,
+                        body: text.trim(),
+                    });
+                }
+                await sock.sendMessage(sender, { text: buildUnauthorizedReply() });
+                continue;
+            }
+
             if (!isCommand) {
                 if (senderPhone) {
                     await saveInboundMessage({
@@ -629,10 +670,6 @@ async function handleIncomingMessages(m) {
             }
 
             if (cmd === '.guide' || cmd === '.aide' || cmd === '.help') {
-                if (!isSenderAuthorized(msg)) {
-                    await sock.sendMessage(sender, { text: '⛔ Non autorisé. Tapez `.menu`.' });
-                    continue;
-                }
                 await sendGuide(sender);
                 continue;
             }
@@ -641,11 +678,6 @@ async function handleIncomingMessages(m) {
                 await sock.sendMessage(sender, {
                     text: `🏓 Pong — Boxing Center Bot en ligne.\nConsole : ${SITE_URL}`,
                 });
-                continue;
-            }
-
-            if (!isSenderAuthorized(msg)) {
-                await sock.sendMessage(sender, { text: '⛔ Non autorisé.' });
                 continue;
             }
 

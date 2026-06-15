@@ -16,6 +16,8 @@ SUPABASE_URL=https://ulxtbvxdueolvnjhpzvw.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=
 
 MANDATORY_ADMIN_PHONE=237693646080
+# Numéros admin supplémentaires (séparés par virgules, indicatif pays inclus)
+# ADMIN_PHONES=33612345678,33744977766
 
 BREVO_API_KEY=
 BREVO_SENDER_EMAIL=suzinabot@11426075.brevosend.com
@@ -49,5 +51,12 @@ npm start
 | `POST /api/send-message` | `x-api-secret` | WhatsApp |
 
 ## Commandes WhatsApp (admins)
+
+Seuls les numéros autorisés peuvent utiliser les commandes. Les autres reçoivent une réponse automatique (FR + EN) avec signature Boxing Center.
+
+**Numéros autorisés :**
+- `MANDATORY_ADMIN_PHONE` (toujours actif, non supprimable)
+- `ADMIN_PHONES` dans `.env` (liste séparée par virgules)
+- `bot_config.json` → `authorizedPhones` (ajout via `.authorise NUMERO` ou dashboard gestion-manager)
 
 `.menu` `.guide` `.numeros` `.emails` `.nonlus` `.stats` `.authorise NUMERO`
