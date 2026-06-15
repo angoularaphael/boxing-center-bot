@@ -5,3 +5,4 @@ node_modules/
 bin/
 bot_config.json
 users.json
+data/exports/

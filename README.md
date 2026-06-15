@@ -50,4 +50,10 @@ npm start
 
 ## Commandes WhatsApp (admins)
 
+| Commande | Description |
+|----------|-------------|
+| `.cs` / `.chabane` | **Répondre** à un message de contacts → export CSV Groupe Chabane (nom, téléphone) |
+
+Voir `.menu` et `.guide` dans WhatsApp pour la liste complète.
+
 `.menu` `.guide` `.numeros` `.emails` `.nonlus` `.stats` `.authorise NUMERO`
