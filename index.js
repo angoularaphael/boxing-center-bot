@@ -12,6 +12,7 @@ const cors = require('cors');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 // Bothosting : le .env éditable est à /home/container/.env (parent du clone)
 require('dotenv').config({ path: path.join(__dirname, '.env') });
@@ -232,26 +233,6 @@ function isSenderAuthorized(msg) {
     const senderPhone = resolveSenderPhone(msg);
     if (!senderPhone) return false;
     return getAllAuthorizedPhones().includes(senderPhone);
-}
-
-function buildUnauthorizedReply() {
-    const email = RECEPTION_EMAIL;
-    const body = [
-        'Bonjour,',
-        '',
-        'Ce numéro WhatsApp est réservé à l\'équipe Boxing Center. Nous ne pouvons pas répondre aux messages depuis ce contact.',
-        '',
-        `Pour toute question, merci de nous écrire à ${email}`,
-        '',
-        '—',
-        '',
-        'Hello,',
-        '',
-        'This WhatsApp line is reserved for the Boxing Center team. We are unable to respond to messages from this number.',
-        '',
-        `For any enquiry, please contact us at ${email}`,
-    ].join('\n');
-    return appendWhatsAppSignature(body);
 }
 
 const BOT_COMMANDS = new Set([
@@ -644,7 +625,6 @@ async function handleIncomingMessages(m) {
                         body: text.trim(),
                     });
                 }
-                await sock.sendMessage(sender, { text: buildUnauthorizedReply() });
                 continue;
             }
 
@@ -1276,6 +1256,90 @@ async function deliverToManager(mgr, { message, subject, html, channels, results
     await Promise.all(tasks);
 }
 
+const RECENT_BULK_SENDS = new Map();
+const BULK_SEND_DEDUP_MS = 15 * 60 * 1000;
+
+function pruneBulkSendDedup() {
+    const now = Date.now();
+    for (const [key, startedAt] of RECENT_BULK_SENDS) {
+        if (now - startedAt > BULK_SEND_DEDUP_MS) RECENT_BULK_SENDS.delete(key);
+    }
+}
+
+function bulkSendDedupKey(scope, body) {
+    const ids =
+        (Array.isArray(body.manager_ids) && body.manager_ids) ||
+        (Array.isArray(body.promoter_ids) && body.promoter_ids) ||
+        (Array.isArray(body.boxeur_ids) && body.boxeur_ids) ||
+        [];
+    const payload = {
+        scope,
+        test: !!body.test_only,
+        broadcast: body.broadcast || '',
+        ids: [...ids].sort().join(','),
+        channels: [...(body.channels || [])].sort().join(','),
+        msg: String(body.message || '').slice(0, 400),
+    };
+    return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
+function registerBulkSend(key) {
+    pruneBulkSendDedup();
+    if (RECENT_BULK_SENDS.has(key)) return false;
+    RECENT_BULK_SENDS.set(key, Date.now());
+    return true;
+}
+
+async function resolveManagersForSend({ managerIds, testOnly, broadcast }) {
+    if (testOnly) {
+        const test = await fetchTestManager();
+        if (test) return [test];
+        return [{
+            nom: 'atangana',
+            email: TEST_TARGET_EMAIL,
+            telephone: TEST_TARGET_PHONE,
+            id: null,
+        }];
+    }
+    if (broadcast === 'email') return fetchManagersForBroadcast('email');
+    if (broadcast === 'phone' || broadcast === 'whatsapp') {
+        return fetchManagersForBroadcast('whatsapp');
+    }
+    if (broadcast === 'all') return fetchManagers({});
+    if (Array.isArray(managerIds) && managerIds.length) {
+        const managers = [];
+        for (const id of managerIds) {
+            const m = await fetchManagerById(id);
+            if (m) managers.push(m);
+        }
+        return managers;
+    }
+    return null;
+}
+
+async function deliverManagersBatch(managers, { message, subject, html, channels, testOnly }) {
+    const results = {
+        whatsapp: { sent: 0, failed: 0, skipped: 0 },
+        email: { sent: 0, failed: 0, skipped: 0 },
+        errors: [],
+        destinations: [],
+    };
+    const ctx = { message, subject, html, channels, results };
+    const fastBatch = testOnly || managers.length <= 3;
+
+    if (fastBatch) {
+        await Promise.all(managers.map((mgr) => deliverToManager(mgr, ctx)));
+    } else {
+        for (const mgr of managers) {
+            await deliverToManager(mgr, ctx);
+            if (channels.includes('whatsapp')) {
+                await new Promise((r) => setTimeout(r, 2000));
+            }
+        }
+    }
+    return results;
+}
+
 app.post('/api/send-to-managers', async (req, res) => {
     if (!verifyApiSecret(req, res)) return;
     const {
@@ -1294,63 +1358,71 @@ app.post('/api/send-to-managers', async (req, res) => {
     }
 
     try {
-        let managers = [];
-        if (testOnly) {
-            const test = await fetchTestManager();
-            if (test) {
-                managers = [test];
-            } else {
-                managers = [{
-                    nom: 'atangana',
-                    email: TEST_TARGET_EMAIL,
-                    telephone: TEST_TARGET_PHONE,
-                    id: null,
-                }];
-            }
-        } else if (broadcast) {
-            if (broadcast === 'email') {
-                managers = await fetchManagersForBroadcast('email');
-            } else if (broadcast === 'phone' || broadcast === 'whatsapp') {
-                managers = await fetchManagersForBroadcast('whatsapp');
-            } else if (broadcast === 'all') {
-                managers = await fetchManagers({});
-            } else {
-                return res.status(400).json({ error: 'broadcast invalide (email, phone, all)' });
-            }
-        } else if (Array.isArray(managerIds) && managerIds.length) {
-            for (const id of managerIds) {
-                const m = await fetchManagerById(id);
-                if (m) managers.push(m);
-            }
-        } else {
-            return res.status(400).json({ error: 'manager_ids, broadcast ou test_only requis' });
+        const dedupKey = bulkSendDedupKey('managers', req.body);
+        if (!registerBulkSend(dedupKey)) {
+            return res.json({
+                success: true,
+                duplicate: true,
+                managers: 0,
+                whatsapp: { sent: 0, failed: 0, skipped: 0 },
+                email: { sent: 0, failed: 0, skipped: 0 },
+                errors: [],
+                destinations: [],
+                warnings: ['Envoi identique ignoré (déjà lancé il y a moins de 15 min).'],
+            });
         }
 
+        const managers = await resolveManagersForSend({
+            managerIds,
+            testOnly,
+            broadcast,
+        });
+
+        if (managers === null) {
+            return res.status(400).json({ error: 'manager_ids, broadcast ou test_only requis' });
+        }
+        if (broadcast && !['email', 'phone', 'whatsapp', 'all'].includes(broadcast)) {
+            return res.status(400).json({ error: 'broadcast invalide (email, phone, all)' });
+        }
         if (!managers.length) {
             return res.status(400).json({ error: 'Aucun manager trouvé pour cet envoi' });
         }
 
-        const results = {
-            whatsapp: { sent: 0, failed: 0, skipped: 0 },
-            email: { sent: 0, failed: 0, skipped: 0 },
-            errors: [],
-            destinations: [],
-        };
+        const waTargets = channels.includes('whatsapp')
+            ? managers.filter((m) => m.telephone).length
+            : 0;
+        const runInBackground = channels.includes('whatsapp') && waTargets > 1 && !testOnly;
 
-        const fastBatch = testOnly || managers.length <= 5;
-        const ctx = { message, subject, html, channels, results };
-
-        if (fastBatch) {
-            await Promise.all(managers.map((mgr) => deliverToManager(mgr, ctx)));
-        } else {
-            for (const mgr of managers) {
-                await deliverToManager(mgr, ctx);
-                if (channels.includes('whatsapp')) {
-                    await new Promise((r) => setTimeout(r, 1500));
-                }
-            }
+        if (runInBackground) {
+            res.json({
+                success: true,
+                accepted: true,
+                managers: managers.length,
+                whatsapp: { sent: 0, queued: waTargets, failed: 0, skipped: managers.length - waTargets },
+                email: { sent: 0, failed: 0, skipped: 0 },
+                errors: [],
+                destinations: [],
+                warnings: [`Envoi WhatsApp démarré pour ${waTargets} numéro(s) en arrière-plan.`],
+            });
+            setImmediate(() => {
+                deliverManagersBatch(managers, {
+                    message,
+                    subject,
+                    html,
+                    channels,
+                    testOnly,
+                }).catch((err) => console.error('[send-to-managers] background:', err.message));
+            });
+            return;
         }
 
+        const results = await deliverManagersBatch(managers, {
+            message,
+            subject,
+            html,
+            channels,
+            testOnly,
+        });
         res.json({ success: true, managers: managers.length, ...results });
     } catch (err) {
         res.status(500).json({ error: err.message });

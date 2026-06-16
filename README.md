@@ -52,7 +52,7 @@ npm start
 
 ## Commandes WhatsApp (admins)
 
-Seuls les numéros autorisés peuvent utiliser les commandes. Les autres reçoivent une réponse automatique (FR + EN) avec signature Boxing Center.
+Seuls les numéros autorisés peuvent utiliser les commandes. Les autres messages sont ignorés (sans réponse automatique).
 
 **Numéros autorisés :**
 - `MANDATORY_ADMIN_PHONE` (toujours actif, non supprimable)
