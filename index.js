@@ -40,6 +40,9 @@ const {
     fetchBoxeursForBroadcast,
     fetchBoxeursWithPhone,
     fetchBoxeursWithEmail,
+    fetchClientsByIds,
+    clientDisplayName,
+    getSupabase,
     fetchUnreadInbound,
     fetchInboundMessages,
     fetchOutboundMessages,
@@ -1522,6 +1525,136 @@ app.post('/api/send-to-managers', async (req, res) => {
             testOnly,
         });
         res.json({ success: true, managers: managers.length, ...results });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+async function deliverToClient(client, { message, subject, html, channels, results }) {
+    const mailSubject = subject || 'Message Boxing Center';
+    const label = clientDisplayName(client);
+    const tasks = [];
+
+    if (channels.includes('whatsapp')) {
+        tasks.push((async () => {
+            if (!client.telephone) {
+                results.whatsapp.skipped++;
+                return;
+            }
+            try {
+                await sendWhatsAppMessage(client.telephone, message, null, null, null);
+                results.whatsapp.sent++;
+                results.destinations.push({
+                    channel: 'whatsapp',
+                    to: `+${normalizePhone(client.telephone)}`,
+                    client: label,
+                });
+            } catch (err) {
+                results.whatsapp.failed++;
+                results.errors.push({ client: label, channel: 'whatsapp', error: err.message });
+            }
+        })());
+    }
+
+    if (channels.includes('email')) {
+        tasks.push((async () => {
+            if (!client.email) {
+                results.email.skipped++;
+                return;
+            }
+            try {
+                const emailHtml = html || buildEmailHtml({
+                    subject: mailSubject,
+                    body: message,
+                    recipientName: label,
+                });
+                await sendBrevoEmail({
+                    to: client.email,
+                    subject: mailSubject,
+                    html: emailHtml,
+                    text: message,
+                    recipientName: label,
+                });
+                results.email.sent++;
+                results.destinations.push({
+                    channel: 'email',
+                    to: client.email,
+                    client: label,
+                });
+            } catch (err) {
+                results.email.failed++;
+                results.errors.push({ client: label, channel: 'email', error: err.message });
+            }
+        })());
+    }
+
+    await Promise.all(tasks);
+}
+
+async function resolveClientsForSend({ clientIds, testOnly, broadcast }) {
+    if (testOnly) {
+        return [{
+            prenom: 'Test',
+            nom: 'atangana',
+            email: TEST_TARGET_EMAIL,
+            telephone: TEST_TARGET_PHONE,
+            id: null,
+        }];
+    }
+    if (broadcast === 'email' || broadcast === 'phone' || broadcast === 'whatsapp' || broadcast === 'all') {
+        const sb = getSupabase();
+        let query = sb.from('portet_clients').select('*').order('registered_at', { ascending: false });
+        const { data, error } = await query;
+        if (error) throw error;
+        const rows = data || [];
+        if (broadcast === 'email') return rows.filter((c) => c.email);
+        if (broadcast === 'phone' || broadcast === 'whatsapp') return rows.filter((c) => c.telephone);
+        return rows;
+    }
+    if (Array.isArray(clientIds) && clientIds.length) {
+        return fetchClientsByIds(clientIds);
+    }
+    return null;
+}
+
+app.post('/api/send-to-clients', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const {
+        client_ids: clientIds,
+        message,
+        subject,
+        html,
+        channels = ['whatsapp'],
+        test_only: testOnly,
+        broadcast,
+    } = req.body;
+
+    if (!message) return res.status(400).json({ error: 'message required' });
+    if (!Array.isArray(channels) || !channels.length) {
+        return res.status(400).json({ error: 'channels required' });
+    }
+
+    try {
+        const clients = await resolveClientsForSend({ clientIds, testOnly, broadcast });
+        if (clients === null) {
+            return res.status(400).json({ error: 'client_ids, broadcast ou test_only requis' });
+        }
+        if (!clients.length) {
+            return res.status(400).json({ error: 'Aucun client trouvé pour cet envoi' });
+        }
+
+        const results = {
+            whatsapp: { sent: 0, failed: 0, skipped: 0 },
+            email: { sent: 0, failed: 0, skipped: 0 },
+            errors: [],
+            destinations: [],
+            warnings: [],
+        };
+
+        const ctx = { message, subject, html, channels, results };
+        await runBulkDelivery(clients, deliverToClient, ctx, { testOnly });
+
+        res.json({ success: true, clients: clients.length, ...results });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

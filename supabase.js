@@ -283,6 +283,27 @@ async function fetchManagersWithEmail(limit = 10) {
     return data || [];
 }
 
+async function fetchClientsByIds(ids) {
+    if (!ids?.length) return [];
+    const sb = getSupabase();
+    const { data, error } = await sb.from('portet_clients').select('*').in('id', ids);
+    if (error) throw error;
+    return data || [];
+}
+
+async function fetchClientById(id) {
+    const sb = getSupabase();
+    const { data, error } = await sb.from('portet_clients').select('*').eq('id', id).maybeSingle();
+    if (error) throw error;
+    return data;
+}
+
+function clientDisplayName(client) {
+    if (!client) return 'Client';
+    const full = [client.prenom, client.nom].filter(Boolean).join(' ').trim();
+    return full || client.email || client.telephone || 'Client';
+}
+
 async function fetchUnreadInbound() {
     const sb = getSupabase();
     const { data, error } = await sb
@@ -375,6 +396,9 @@ module.exports = {
     fetchBoxeursForBroadcast,
     fetchBoxeursWithPhone,
     fetchBoxeursWithEmail,
+    fetchClientById,
+    fetchClientsByIds,
+    clientDisplayName,
     fetchUnreadInbound,
     fetchInboundMessages,
     fetchOutboundMessages,
