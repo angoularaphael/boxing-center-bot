@@ -1358,18 +1358,20 @@ app.post('/api/send-to-managers', async (req, res) => {
     }
 
     try {
-        const dedupKey = bulkSendDedupKey('managers', req.body);
-        if (!registerBulkSend(dedupKey)) {
-            return res.json({
-                success: true,
-                duplicate: true,
-                managers: 0,
-                whatsapp: { sent: 0, failed: 0, skipped: 0 },
-                email: { sent: 0, failed: 0, skipped: 0 },
-                errors: [],
-                destinations: [],
-                warnings: ['Envoi identique ignoré (déjà lancé il y a moins de 15 min).'],
-            });
+        if (!testOnly) {
+            const dedupKey = bulkSendDedupKey('managers', req.body);
+            if (!registerBulkSend(dedupKey)) {
+                return res.json({
+                    success: true,
+                    duplicate: true,
+                    managers: 0,
+                    whatsapp: { sent: 0, failed: 0, skipped: 0 },
+                    email: { sent: 0, failed: 0, skipped: 0 },
+                    errors: [],
+                    destinations: [],
+                    warnings: ['Envoi identique ignoré (déjà lancé il y a moins de 15 min).'],
+                });
+            }
         }
 
         const managers = await resolveManagersForSend({
