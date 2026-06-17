@@ -1162,15 +1162,27 @@ app.post('/api/send-bulk', async (req, res) => {
         return res.status(400).json({ error: 'phones[] required' });
     }
     if (!message) return res.status(400).json({ error: 'message required' });
-    const results = { sent: 0, failed: 0, errors: [] };
+    const results = { sent: 0, failed: 0, errors: [], warnings: [] };
     for (const phone of phones) {
+        if (!canSendWhatsAppBulkNow()) {
+            results.warnings.push(
+                `Limite horaire WhatsApp (${WA_BULK_MAX_PER_HOUR}/h) atteinte — envoi arrêté.`
+            );
+            results.failed += phones.length - results.sent - results.failed;
+            break;
+        }
         try {
             await sendWhatsAppMessage(phone, message);
             results.sent++;
-            await new Promise((r) => setTimeout(r, 1500));
+            recordWhatsAppBulkSend();
+            await sleepBetweenWhatsAppBulk();
         } catch (err) {
             results.failed++;
             results.errors.push({ phone, error: err.message });
+            if (isWhatsAppRateLimitError(err.message)) {
+                results.warnings.push('Envoi interrompu : restriction WhatsApp détectée.');
+                break;
+            }
         }
     }
     res.json({ success: true, ...results });
@@ -1259,6 +1271,100 @@ async function deliverToManager(mgr, { message, subject, html, channels, results
 const RECENT_BULK_SENDS = new Map();
 const BULK_SEND_DEDUP_MS = 15 * 60 * 1000;
 
+/** Espacement envois WhatsApp — limite blocage anti-spam (~24 h). */
+const WA_BULK_DELAY_MS = Math.max(15000, Number(process.env.WA_BULK_DELAY_MS) || 50000);
+const WA_BULK_DELAY_JITTER_MS = Math.max(0, Number(process.env.WA_BULK_DELAY_JITTER_MS) || 20000);
+const WA_BULK_MAX_PER_HOUR = Math.max(1, Number(process.env.WA_BULK_MAX_PER_HOUR) || 12);
+const waBulkSendTimestamps = [];
+
+function pruneWaBulkTimestamps() {
+    const cutoff = Date.now() - 60 * 60 * 1000;
+    while (waBulkSendTimestamps.length && waBulkSendTimestamps[0] < cutoff) {
+        waBulkSendTimestamps.shift();
+    }
+}
+
+function canSendWhatsAppBulkNow() {
+    pruneWaBulkTimestamps();
+    return waBulkSendTimestamps.length < WA_BULK_MAX_PER_HOUR;
+}
+
+function recordWhatsAppBulkSend() {
+    waBulkSendTimestamps.push(Date.now());
+}
+
+async function sleepBetweenWhatsAppBulk() {
+    const jitter = WA_BULK_DELAY_JITTER_MS ? Math.floor(Math.random() * WA_BULK_DELAY_JITTER_MS) : 0;
+    await new Promise((r) => setTimeout(r, WA_BULK_DELAY_MS + jitter));
+}
+
+function isWhatsAppRateLimitError(message) {
+    const m = String(message || '').toLowerCase();
+    return (
+        m.includes('rate') ||
+        m.includes('restrict') ||
+        m.includes('ban') ||
+        m.includes('spam') ||
+        m.includes('too many') ||
+        m.includes('blocked') ||
+        m.includes('temporarily')
+    );
+}
+
+function shouldParallelBulkDelivery(channels, count, testOnly) {
+    if (testOnly) return true;
+    if (channels.includes('whatsapp') && count > 1) return false;
+    return count <= 3;
+}
+
+async function runBulkDelivery(recipients, deliverFn, ctx, { testOnly = false } = {}) {
+    const { channels, results } = ctx;
+    if (!results.warnings) results.warnings = [];
+
+    if (shouldParallelBulkDelivery(channels, recipients.length, testOnly)) {
+        await Promise.all(recipients.map((r) => deliverFn(r, ctx)));
+        return;
+    }
+
+    for (let i = 0; i < recipients.length; i++) {
+        if (channels.includes('whatsapp') && !testOnly && !canSendWhatsAppBulkNow()) {
+            const remaining = recipients.length - i;
+            results.whatsapp.skipped += remaining;
+            results.warnings.push(
+                `WhatsApp : limite horaire (${WA_BULK_MAX_PER_HOUR}/h) atteinte. ` +
+                `${remaining} destinataire(s) non contacté(s) — utilisez l'email ou réessayez dans 1 h.`
+            );
+            break;
+        }
+
+        const sentBefore = results.whatsapp.sent;
+        const errorsBefore = results.errors.length;
+
+        await deliverFn(recipients[i], ctx);
+
+        if (channels.includes('whatsapp')) {
+            if (results.whatsapp.sent > sentBefore) {
+                recordWhatsAppBulkSend();
+            }
+            const lastErr =
+                results.errors.length > errorsBefore
+                    ? results.errors[results.errors.length - 1]
+                    : null;
+            if (lastErr?.channel === 'whatsapp' && isWhatsAppRateLimitError(lastErr.error)) {
+                const remaining = recipients.length - i - 1;
+                if (remaining > 0) results.whatsapp.skipped += remaining;
+                results.warnings.push(
+                    'WhatsApp : envoi interrompu (limitation anti-spam). Attendez ~24 h ou passez par l\'email.'
+                );
+                break;
+            }
+            if (i < recipients.length - 1) {
+                await sleepBetweenWhatsAppBulk();
+            }
+        }
+    }
+}
+
 function pruneBulkSendDedup() {
     const now = Date.now();
     for (const [key, startedAt] of RECENT_BULK_SENDS) {
@@ -1323,20 +1429,10 @@ async function deliverManagersBatch(managers, { message, subject, html, channels
         email: { sent: 0, failed: 0, skipped: 0 },
         errors: [],
         destinations: [],
+        warnings: [],
     };
     const ctx = { message, subject, html, channels, results };
-    const fastBatch = testOnly || managers.length <= 3;
-
-    if (fastBatch) {
-        await Promise.all(managers.map((mgr) => deliverToManager(mgr, ctx)));
-    } else {
-        for (const mgr of managers) {
-            await deliverToManager(mgr, ctx);
-            if (channels.includes('whatsapp')) {
-                await new Promise((r) => setTimeout(r, 2000));
-            }
-        }
-    }
+    await runBulkDelivery(managers, deliverToManager, ctx, { testOnly });
     return results;
 }
 
@@ -1404,7 +1500,7 @@ app.post('/api/send-to-managers', async (req, res) => {
                 email: { sent: 0, failed: 0, skipped: 0 },
                 errors: [],
                 destinations: [],
-                warnings: [`Envoi WhatsApp démarré pour ${waTargets} numéro(s) en arrière-plan.`],
+                warnings: [`Envoi WhatsApp démarré pour ${waTargets} numéro(s) — ~1 min entre chaque pour éviter le blocage.`],
             });
             setImmediate(() => {
                 deliverManagersBatch(managers, {
@@ -1554,21 +1650,11 @@ app.post('/api/send-to-promoteurs', async (req, res) => {
             email: { sent: 0, failed: 0, skipped: 0 },
             errors: [],
             destinations: [],
+            warnings: [],
         };
 
-        const fastBatch = testOnly || promoteurs.length <= 5;
         const ctx = { message, subject, html, channels, results };
-
-        if (fastBatch) {
-            await Promise.all(promoteurs.map((prom) => deliverToPromoteur(prom, ctx)));
-        } else {
-            for (const prom of promoteurs) {
-                await deliverToPromoteur(prom, ctx);
-                if (channels.includes('whatsapp')) {
-                    await new Promise((r) => setTimeout(r, 1500));
-                }
-            }
-        }
+        await runBulkDelivery(promoteurs, deliverToPromoteur, ctx, { testOnly });
 
         res.json({ success: true, promoteurs: promoteurs.length, ...results });
     } catch (err) {
@@ -1700,21 +1786,11 @@ app.post('/api/send-to-boxeurs', async (req, res) => {
             email: { sent: 0, failed: 0, skipped: 0 },
             errors: [],
             destinations: [],
+            warnings: [],
         };
 
-        const fastBatch = testOnly || boxeurs.length <= 5;
         const ctx = { message, subject, html, channels, results };
-
-        if (fastBatch) {
-            await Promise.all(boxeurs.map((boxeur) => deliverToBoxeur(boxeur, ctx)));
-        } else {
-            for (const boxeur of boxeurs) {
-                await deliverToBoxeur(boxeur, ctx);
-                if (channels.includes('whatsapp')) {
-                    await new Promise((r) => setTimeout(r, 1500));
-                }
-            }
-        }
+        await runBulkDelivery(boxeurs, deliverToBoxeur, ctx, { testOnly });
 
         res.json({ success: true, boxeurs: boxeurs.length, ...results });
     } catch (err) {
@@ -1787,21 +1863,11 @@ app.post('/api/send-to-groupe-chabane', async (req, res) => {
             email: { sent: 0, failed: 0, skipped: 0 },
             errors: [],
             destinations: [],
+            warnings: [],
         };
 
-        const fastBatch = testOnly || contacts.length <= 5;
         const ctx = { message, channels, results };
-
-        if (fastBatch) {
-            await Promise.all(contacts.map((contact) => deliverToGroupeChabaneContact(contact, ctx)));
-        } else {
-            for (const contact of contacts) {
-                await deliverToGroupeChabaneContact(contact, ctx);
-                if (channels.includes('whatsapp')) {
-                    await new Promise((r) => setTimeout(r, 1500));
-                }
-            }
-        }
+        await runBulkDelivery(contacts, deliverToGroupeChabaneContact, ctx, { testOnly });
 
         res.json({ success: true, contacts: contacts.length, ...results });
     } catch (err) {
