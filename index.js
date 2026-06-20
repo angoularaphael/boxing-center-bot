@@ -1673,7 +1673,7 @@ async function resolveClientsForSend({ clientIds, testOnly, broadcast }) {
     }
     if (broadcast === 'email' || broadcast === 'phone' || broadcast === 'whatsapp' || broadcast === 'all') {
         const sb = getSupabase();
-        let query = sb.from('portet_clients').select('*').order('registered_at', { ascending: false });
+        let query = sb.from('portet_clients').select('*').order('created_at', { ascending: false });
         const { data, error } = await query;
         if (error) throw error;
         const rows = data || [];
