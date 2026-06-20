@@ -118,6 +118,22 @@ function normalizePhone(input) {
     return String(input).split('@')[0].split(':')[0].replace(/\D/g, '');
 }
 
+/** Numéro FR 06… → 336… pour WhatsApp. */
+function toWhatsAppDigits(input) {
+    const digits = normalizePhone(input);
+    if (!digits) return '';
+    if (digits.length === 10 && digits.startsWith('0')) {
+        return `33${digits.slice(1)}`;
+    }
+    if (digits.length === 9 && /^[1-9]/.test(digits)) {
+        return `33${digits}`;
+    }
+    if (digits.startsWith('33') && digits.length >= 11) {
+        return digits;
+    }
+    return digits;
+}
+
 const MANDATORY_ADMIN_PHONE = normalizePhone(
     process.env.MANDATORY_ADMIN_PHONE || '33762641473'
 );
@@ -587,7 +603,10 @@ async function sendWhatsAppMessage(
     if (!isConnected || !sock) {
         throw new Error('WhatsApp non connecté');
     }
-    const cleanNumber = normalizePhone(phone);
+    const cleanNumber = toWhatsAppDigits(phone);
+    if (!isValidPhoneDigits(cleanNumber)) {
+        throw new Error(`Numéro invalide : ${phone}`);
+    }
     const fullMessage = appendWhatsAppSignature(message);
     const record = await createOutboundMessage({
         manager_id: (promoterId || boxeurId || clientId) ? null : managerId,
