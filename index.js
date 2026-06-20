@@ -41,6 +41,7 @@ const {
     fetchBoxeursWithPhone,
     fetchBoxeursWithEmail,
     fetchClientsByIds,
+    countPortetClientsForBroadcast,
     clientDisplayName,
     getSupabase,
     fetchUnreadInbound,
@@ -1673,13 +1674,18 @@ async function resolveClientsForSend({ clientIds, testOnly, broadcast }) {
     }
     if (broadcast === 'email' || broadcast === 'phone' || broadcast === 'whatsapp' || broadcast === 'all') {
         const sb = getSupabase();
-        let query = sb.from('portet_clients').select('*').order('created_at', { ascending: false });
+        let query = sb
+            .from('portet_clients')
+            .select('id, prenom, nom, telephone, email')
+            .order('created_at', { ascending: false });
+        if (broadcast === 'email') {
+            query = query.not('email', 'is', null).neq('email', '');
+        } else if (broadcast === 'phone' || broadcast === 'whatsapp') {
+            query = query.not('telephone', 'is', null).neq('telephone', '');
+        }
         const { data, error } = await query;
         if (error) throw error;
-        const rows = data || [];
-        if (broadcast === 'email') return rows.filter((c) => c.email);
-        if (broadcast === 'phone' || broadcast === 'whatsapp') return rows.filter((c) => c.telephone);
-        return rows;
+        return data || [];
     }
     if (Array.isArray(clientIds) && clientIds.length) {
         return fetchClientsByIds(clientIds);
@@ -1720,6 +1726,50 @@ app.post('/api/send-to-clients', async (req, res) => {
                     warnings: ['Envoi identique ignoré (déjà lancé il y a moins de 15 min).'],
                 });
             }
+        }
+
+        const isWaBroadcast =
+            !testOnly &&
+            channels.includes('whatsapp') &&
+            (broadcast === 'phone' || broadcast === 'whatsapp' || broadcast === 'all');
+
+        if (isWaBroadcast) {
+            const waTargets = await countPortetClientsForBroadcast(
+                broadcast === 'all' ? 'phone' : broadcast
+            );
+            if (!waTargets) {
+                return res.status(400).json({ error: 'Aucun client trouvé pour cet envoi' });
+            }
+
+            res.json({
+                success: true,
+                accepted: true,
+                clients: waTargets,
+                whatsapp: { sent: 0, queued: waTargets, failed: 0, skipped: 0 },
+                email: { sent: 0, failed: 0, skipped: 0 },
+                errors: [],
+                destinations: [],
+                warnings: [
+                    `Envoi WhatsApp démarré pour ${waTargets} numéro(s) sur Bothosting — ` +
+                        `~12 messages/heure max (anti-spam WhatsApp).`,
+                ],
+            });
+
+            setImmediate(() => {
+                resolveClientsForSend({ clientIds, testOnly: false, broadcast })
+                    .then((clients) =>
+                        deliverClientsBatch(clients, {
+                            message,
+                            subject,
+                            html,
+                            channels,
+                            testOnly: false,
+                            offreEteWhatsapp,
+                        })
+                    )
+                    .catch((err) => console.error('[send-to-clients] background:', err.message));
+            });
+            return;
         }
 
         const clients = await resolveClientsForSend({ clientIds, testOnly, broadcast });

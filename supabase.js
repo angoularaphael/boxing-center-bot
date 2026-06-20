@@ -286,9 +286,26 @@ async function fetchManagersWithEmail(limit = 10) {
 async function fetchClientsByIds(ids) {
     if (!ids?.length) return [];
     const sb = getSupabase();
-    const { data, error } = await sb.from('portet_clients').select('*').in('id', ids);
+    const { data, error } = await sb
+        .from('portet_clients')
+        .select('id, prenom, nom, telephone, email')
+        .in('id', ids);
     if (error) throw error;
     return data || [];
+}
+
+/** Compte rapide pour répondre à Vercel avant chargement complet (17k+ lignes). */
+async function countPortetClientsForBroadcast(broadcast) {
+    const sb = getSupabase();
+    let query = sb.from('portet_clients').select('id', { count: 'exact', head: true });
+    if (broadcast === 'email') {
+        query = query.not('email', 'is', null).neq('email', '');
+    } else if (broadcast === 'phone' || broadcast === 'whatsapp') {
+        query = query.not('telephone', 'is', null).neq('telephone', '');
+    }
+    const { count, error } = await query;
+    if (error) throw error;
+    return count ?? 0;
 }
 
 async function fetchClientById(id) {
@@ -414,6 +431,7 @@ module.exports = {
     fetchBoxeursWithEmail,
     fetchClientById,
     fetchClientsByIds,
+    countPortetClientsForBroadcast,
     clientDisplayName,
     fetchUnreadInbound,
     fetchInboundMessages,
