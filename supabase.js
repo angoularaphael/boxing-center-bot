@@ -306,7 +306,7 @@ async function fetchClientsByIds(ids) {
     const sb = getSupabase();
     const { data, error } = await sb
         .from('portet_clients')
-        .select('id, prenom, nom, telephone, email')
+        .select('id, prenom, nom, telephone, email, salle')
         .in('id', ids);
     if (error) throw error;
     return data || [];

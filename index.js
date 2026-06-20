@@ -1602,7 +1602,11 @@ async function deliverToClient(client, { message, subject, html, channels, resul
     const label = clientDisplayName(client);
     const tasks = [];
     const waMessage = offre_ete_whatsapp
-        ? pickRandomOffreEteWhatsAppMessage({ prenom: client.prenom, nom: client.nom })
+        ? pickRandomOffreEteWhatsAppMessage({
+            prenom: client.prenom,
+            nom: client.nom,
+            salle: client.salle,
+        })
         : message;
 
     if (channels.includes('whatsapp')) {
@@ -1697,7 +1701,7 @@ async function resolveClientsForSend({ clientIds, testOnly, broadcast }) {
         const makeQuery = () => {
             let query = sb
                 .from('portet_clients')
-                .select('id, prenom, nom, telephone, email')
+                .select('id, prenom, nom, telephone, email, salle')
                 .order('created_at', { ascending: false });
             if (broadcast === 'email') {
                 query = query.not('email', 'is', null).neq('email', '');
@@ -1773,6 +1777,7 @@ app.post('/api/send-to-clients', async (req, res) => {
                 warnings: [
                     `Envoi WhatsApp démarré pour ${waTargets} numéro(s) sur Bothosting — ` +
                         `~12 messages/heure max (anti-spam WhatsApp).`,
+                    'Chaque message : prénom + variante aléatoire parmi 14 textes.',
                 ],
             });
 
@@ -1839,6 +1844,7 @@ app.post('/api/send-to-clients', async (req, res) => {
                 warnings: [
                     `Envoi WhatsApp démarré pour ${waTargets} numéro(s) sur Bothosting — ` +
                         `~12 messages/heure max (anti-spam WhatsApp).`,
+                    'Chaque message : prénom + variante aléatoire parmi 14 textes.',
                 ],
             });
             setImmediate(() => {
