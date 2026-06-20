@@ -2,6 +2,14 @@ const SHOP_URL =
   process.env.OFFRE_ETE_SHOP_URL ||
   'https://boutique.boxingcenter.fr/accueil/156-2424-offre-ete-2026-3-mois-illimites-a-89-.html#/31-salle_principale_d_entrainement-toulouse_st_cyprien';
 
+function greetingNameOrFallback(prenom, nom, fallback) {
+  const p = String(prenom || '').trim();
+  if (p) return p;
+  const n = String(nom || '').trim();
+  if (n) return n.split(/\s+/)[0];
+  return fallback;
+}
+
 /** 13 variantes WhatsApp — message clair : 89€ = abonnement + t-shirt inclus. */
 const OFFRE_ETE_WHATSAPP_TEMPLATES = [
   `Salut {prenom} 👋
@@ -102,27 +110,34 @@ Offre été :
 • *T-shirt offert* inclus
 
 👉 {lien}`,
+
+  `{prenom}, {salle_line}
+
+*89€ tout compris* — 3 mois + t-shirt offert.
+
+{lien}`,
 ];
 
-function greetingName(prenom, nom) {
-  const p = String(prenom || '').trim();
-  if (p) return p;
-  const n = String(nom || '').trim();
-  if (n) return n.split(/\s+/)[0];
-  return 'toi';
+function salleLine(salle) {
+  const s = String(salle || '').trim();
+  if (!s) return '';
+  return `Ta salle : ${s}.`;
 }
 
-function formatOffreEteWhatsAppMessage(template, { prenom, nom } = {}) {
-  const name = greetingName(prenom, nom);
-  return template.replace(/\{prenom\}/g, name).replace(/\{lien\}/g, SHOP_URL);
+function formatOffreEteWhatsAppMessage(template, { prenom, nom, salle } = {}) {
+  const name = greetingNameOrFallback(prenom, nom, 'toi');
+  return template
+    .replace(/\{prenom\}/g, name)
+    .replace(/\{lien\}/g, SHOP_URL)
+    .replace(/\{salle_line\}/g, salleLine(salle));
 }
 
-function pickRandomOffreEteWhatsAppMessage({ prenom, nom } = {}) {
+function pickRandomOffreEteWhatsAppMessage({ prenom, nom, salle } = {}) {
   const template =
     OFFRE_ETE_WHATSAPP_TEMPLATES[
       Math.floor(Math.random() * OFFRE_ETE_WHATSAPP_TEMPLATES.length)
     ];
-  return formatOffreEteWhatsAppMessage(template, { prenom, nom });
+  return formatOffreEteWhatsAppMessage(template, { prenom, nom, salle });
 }
 
 module.exports = {
