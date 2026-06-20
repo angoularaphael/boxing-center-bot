@@ -373,6 +373,22 @@ async function updateOutboundMessage(id, patch) {
     return data;
 }
 
+/** Accusé de lecture WhatsApp (messages.update status READ). */
+async function markOutboundWhatsAppRead(waMessageId) {
+    if (!waMessageId) return null;
+    const sb = getSupabase();
+    const now = new Date().toISOString();
+    const { data, error } = await sb
+        .from('outbound_messages')
+        .update({ read_at: now })
+        .eq('wa_message_id', String(waMessageId))
+        .is('read_at', null)
+        .select('id, campaign, client_id, recipient')
+        .maybeSingle();
+    if (error) throw error;
+    return data;
+}
+
 module.exports = {
     getSupabase,
     fetchManagers,
@@ -406,4 +422,5 @@ module.exports = {
     markInboundRead,
     createOutboundMessage,
     updateOutboundMessage,
+    markOutboundWhatsAppRead,
 };

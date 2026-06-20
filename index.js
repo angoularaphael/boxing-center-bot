@@ -50,6 +50,7 @@ const {
     markInboundRead,
     createOutboundMessage,
     updateOutboundMessage,
+    markOutboundWhatsAppRead,
 } = require('./supabase');
 const { sendBrevoEmail, verifyEmailSetup } = require('./email');
 const {
@@ -106,6 +107,9 @@ const {
 const TEST_TARGET_PHONE = getTestSendPhone();
 const TEST_TARGET_EMAIL = getTestSendEmail();
 const WA_MAX_LEN = 3800;
+/** proto.WebMessageInfo.Status.READ — accusé de lecture WhatsApp (2 coches bleues). */
+const WA_MSG_STATUS_READ = 4;
+const OFFRE_ETE_CAMPAIGN_TAG = 'offre_ete_2026';
 
 function normalizePhone(input) {
     if (!input) return '';
@@ -569,16 +573,26 @@ async function reactToCommand(msg) {
     }
 }
 
-async function sendWhatsAppMessage(phone, message, managerId = null, promoterId = null, boxeurId = null) {
+async function sendWhatsAppMessage(
+    phone,
+    message,
+    managerId = null,
+    promoterId = null,
+    boxeurId = null,
+    clientId = null,
+    campaign = null
+) {
     if (!isConnected || !sock) {
         throw new Error('WhatsApp non connecté');
     }
     const cleanNumber = normalizePhone(phone);
     const fullMessage = appendWhatsAppSignature(message);
     const record = await createOutboundMessage({
-        manager_id: (promoterId || boxeurId) ? null : managerId,
+        manager_id: (promoterId || boxeurId || clientId) ? null : managerId,
         promoter_id: promoterId || null,
         boxeur_id: boxeurId || null,
+        client_id: clientId || null,
+        campaign: campaign || null,
         channel: 'whatsapp',
         recipient: cleanNumber,
         subject: null,
@@ -588,24 +602,45 @@ async function sendWhatsAppMessage(phone, message, managerId = null, promoterId 
     try {
         const jid = `${cleanNumber}@s.whatsapp.net`;
         const logo = await getMenuLogoBuffer();
+        let waMessageId = null;
         if (logo && fullMessage.length <= WA_CAPTION_MAX) {
-            await sock.sendMessage(jid, { image: logo, caption: fullMessage });
+            const sent = await sock.sendMessage(jid, { image: logo, caption: fullMessage });
+            waMessageId = sent?.key?.id || null;
         } else if (fullMessage.length <= WA_MAX_LEN) {
-            await sock.sendMessage(jid, { text: fullMessage });
+            const sent = await sock.sendMessage(jid, { text: fullMessage });
+            waMessageId = sent?.key?.id || null;
         } else {
             await sendLongMessage(jid, fullMessage);
         }
         await updateOutboundMessage(record.id, {
             status: 'sent',
             sent_at: new Date().toISOString(),
+            wa_message_id: waMessageId,
         });
-        return { success: true, id: record.id, phone: cleanNumber };
+        return { success: true, id: record.id, phone: cleanNumber, waMessageId };
     } catch (err) {
         await updateOutboundMessage(record.id, {
             status: 'failed',
             error: err.message,
         });
         throw err;
+    }
+}
+
+async function handleWhatsAppReadReceipts(updates) {
+    if (!updates?.length) return;
+    for (const { key, update } of updates) {
+        if (!key?.fromMe || !key?.id) continue;
+        const status = update?.status;
+        if (status !== WA_MSG_STATUS_READ && status !== 'READ') continue;
+        try {
+            const row = await markOutboundWhatsAppRead(key.id);
+            if (row?.campaign === OFFRE_ETE_CAMPAIGN_TAG) {
+                console.log(`[BOT] WhatsApp lu — campagne offre été (${row.recipient || '?'})`);
+            }
+        } catch (err) {
+            console.warn('[BOT] Accusé lecture WhatsApp:', err.message);
+        }
     }
 }
 
@@ -954,6 +989,9 @@ async function connectToWhatsApp(method = 'qr', phoneNumber = '', options = {}) 
         });
         sock.ev.on('messages.upsert', async (m) => {
             await handleIncomingMessages(m);
+        });
+        sock.ev.on('messages.update', async (updates) => {
+            await handleWhatsAppReadReceipts(updates);
         });
     } catch (error) {
         console.error('[BOT] Init error:', error);
@@ -1553,7 +1591,15 @@ async function deliverToClient(client, { message, subject, html, channels, resul
                 return;
             }
             try {
-                await sendWhatsAppMessage(client.telephone, waMessage, null, null, null);
+                await sendWhatsAppMessage(
+                    client.telephone,
+                    waMessage,
+                    null,
+                    null,
+                    null,
+                    client.id || null,
+                    offre_ete_whatsapp ? OFFRE_ETE_CAMPAIGN_TAG : null
+                );
                 results.whatsapp.sent++;
                 results.destinations.push({
                     channel: 'whatsapp',
