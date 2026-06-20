@@ -97,8 +97,14 @@ const RECEPTION_EMAIL = process.env.RECEPTION_EMAIL || process.env.BREVO_REPLY_T
 const SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'suzinabot@11426075.brevosend.com';
 const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'Boxing Center';
 const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
-const TEST_TARGET_PHONE = '237693646080';
-const TEST_TARGET_EMAIL = 'linuxcam05@gmail.com';
+const {
+  getTestSendEmail,
+  getTestSendPhone,
+  getTestContactLabel,
+} = require('./testSendTargets');
+
+const TEST_TARGET_PHONE = getTestSendPhone();
+const TEST_TARGET_EMAIL = getTestSendEmail();
 const WA_MAX_LEN = 3800;
 
 function normalizePhone(input) {
@@ -344,7 +350,7 @@ function getGuideText() {
         '• `.contacts-csv` — Répondre à un message contenant des contacts pour recevoir un CSV',
         '',
         '*Tests & admin*',
-        `• \`.test\` — Envoi test WA + email (atangana : ${TEST_TARGET_PHONE} / ${TEST_TARGET_EMAIL})`,
+        `• \`.test\` — Envoi test WA + email (${getTestContactLabel()} : ${TEST_TARGET_PHONE} / ${TEST_TARGET_EMAIL})`,
         '• `.authorise NUMERO` — Autoriser un admin WhatsApp',
         '• `.unauthorise NUMERO` — Retirer un admin',
         '',
@@ -407,7 +413,7 @@ async function runTestEnvoi() {
     const phone = normalizePhone(testMgr?.telephone || TEST_TARGET_PHONE);
     const email = (testMgr?.email || TEST_TARGET_EMAIL).trim().toLowerCase();
     const managerId = testMgr?.id || null;
-    const name = testMgr?.nom || 'atangana';
+    const name = testMgr?.nom || getTestContactLabel();
     const subject = 'Boxing Center';
     const message = 'Message de Boxing Center — merci de confirmer la bonne réception de ce message.';
 
@@ -709,11 +715,11 @@ async function handleIncomingMessages(m) {
                 ]);
                 await sendLongMessage(sender, formatAllStats(mgr, promo, box));
             } else if (cmd === '.test' || cmd === '.testenvoi') {
-                await sock.sendMessage(sender, { text: '🧪 Envoi test en cours (atangana)…' });
+                await sock.sendMessage(sender, { text: `🧪 Envoi test en cours (${getTestContactLabel()})…` });
                 const { results, phone, email, name } = await runTestEnvoi();
                 await sock.sendMessage(sender, {
                     text: [
-                        '🧪 *Test envoi — atangana*',
+                        `🧪 *Test envoi — ${getTestContactLabel()}*`,
                         '',
                         `👤 ${name}`,
                         `📱 WhatsApp +${phone} : ${results.whatsapp}`,
@@ -1271,6 +1277,7 @@ async function deliverToManager(mgr, { message, subject, html, channels, results
     await Promise.all(tasks);
 }
 
+const { pickRandomOffreEteWhatsAppMessage } = require('./offreEteWhatsAppCampaign');
 const RECENT_BULK_SENDS = new Map();
 const BULK_SEND_DEDUP_MS = 15 * 60 * 1000;
 
@@ -1377,6 +1384,7 @@ function pruneBulkSendDedup() {
 
 function bulkSendDedupKey(scope, body) {
     const ids =
+        (Array.isArray(body.client_ids) && body.client_ids) ||
         (Array.isArray(body.manager_ids) && body.manager_ids) ||
         (Array.isArray(body.promoter_ids) && body.promoter_ids) ||
         (Array.isArray(body.boxeur_ids) && body.boxeur_ids) ||
@@ -1404,7 +1412,7 @@ async function resolveManagersForSend({ managerIds, testOnly, broadcast }) {
         const test = await fetchTestManager();
         if (test) return [test];
         return [{
-            nom: 'atangana',
+            nom: getTestContactLabel(),
             email: TEST_TARGET_EMAIL,
             telephone: TEST_TARGET_PHONE,
             id: null,
@@ -1530,10 +1538,13 @@ app.post('/api/send-to-managers', async (req, res) => {
     }
 });
 
-async function deliverToClient(client, { message, subject, html, channels, results }) {
+async function deliverToClient(client, { message, subject, html, channels, results, offre_ete_whatsapp }) {
     const mailSubject = subject || 'Message Boxing Center';
     const label = clientDisplayName(client);
     const tasks = [];
+    const waMessage = offre_ete_whatsapp
+        ? pickRandomOffreEteWhatsAppMessage({ prenom: client.prenom, nom: client.nom })
+        : message;
 
     if (channels.includes('whatsapp')) {
         tasks.push((async () => {
@@ -1542,7 +1553,7 @@ async function deliverToClient(client, { message, subject, html, channels, resul
                 return;
             }
             try {
-                await sendWhatsAppMessage(client.telephone, message, null, null, null);
+                await sendWhatsAppMessage(client.telephone, waMessage, null, null, null);
                 results.whatsapp.sent++;
                 results.destinations.push({
                     channel: 'whatsapp',
@@ -1591,11 +1602,24 @@ async function deliverToClient(client, { message, subject, html, channels, resul
     await Promise.all(tasks);
 }
 
+async function deliverClientsBatch(clients, { message, subject, html, channels, testOnly, offreEteWhatsapp }) {
+    const results = {
+        whatsapp: { sent: 0, failed: 0, skipped: 0 },
+        email: { sent: 0, failed: 0, skipped: 0 },
+        errors: [],
+        destinations: [],
+        warnings: [],
+    };
+    const ctx = { message, subject, html, channels, results, offre_ete_whatsapp: offreEteWhatsapp };
+    await runBulkDelivery(clients, deliverToClient, ctx, { testOnly });
+    return results;
+}
+
 async function resolveClientsForSend({ clientIds, testOnly, broadcast }) {
     if (testOnly) {
         return [{
             prenom: 'Test',
-            nom: 'atangana',
+            nom: getTestContactLabel(),
             email: TEST_TARGET_EMAIL,
             telephone: TEST_TARGET_PHONE,
             id: null,
@@ -1627,33 +1651,82 @@ app.post('/api/send-to-clients', async (req, res) => {
         channels = ['whatsapp'],
         test_only: testOnly,
         broadcast,
+        offre_ete_whatsapp: offreEteWhatsapp,
     } = req.body;
 
-    if (!message) return res.status(400).json({ error: 'message required' });
+    if (!message && !offreEteWhatsapp) return res.status(400).json({ error: 'message required' });
     if (!Array.isArray(channels) || !channels.length) {
         return res.status(400).json({ error: 'channels required' });
     }
 
     try {
+        if (!testOnly) {
+            const dedupKey = bulkSendDedupKey('clients', req.body);
+            if (!registerBulkSend(dedupKey)) {
+                return res.json({
+                    success: true,
+                    duplicate: true,
+                    clients: 0,
+                    whatsapp: { sent: 0, failed: 0, skipped: 0 },
+                    email: { sent: 0, failed: 0, skipped: 0 },
+                    errors: [],
+                    destinations: [],
+                    warnings: ['Envoi identique ignoré (déjà lancé il y a moins de 15 min).'],
+                });
+            }
+        }
+
         const clients = await resolveClientsForSend({ clientIds, testOnly, broadcast });
         if (clients === null) {
             return res.status(400).json({ error: 'client_ids, broadcast ou test_only requis' });
+        }
+        if (broadcast && !['email', 'phone', 'whatsapp', 'all'].includes(broadcast)) {
+            return res.status(400).json({ error: 'broadcast invalide (email, phone, all)' });
         }
         if (!clients.length) {
             return res.status(400).json({ error: 'Aucun client trouvé pour cet envoi' });
         }
 
-        const results = {
-            whatsapp: { sent: 0, failed: 0, skipped: 0 },
-            email: { sent: 0, failed: 0, skipped: 0 },
-            errors: [],
-            destinations: [],
-            warnings: [],
-        };
+        const waTargets = channels.includes('whatsapp')
+            ? clients.filter((c) => c.telephone).length
+            : 0;
+        const runInBackground = channels.includes('whatsapp') && waTargets > 1 && !testOnly;
 
-        const ctx = { message, subject, html, channels, results };
-        await runBulkDelivery(clients, deliverToClient, ctx, { testOnly });
+        if (runInBackground) {
+            res.json({
+                success: true,
+                accepted: true,
+                clients: clients.length,
+                whatsapp: { sent: 0, queued: waTargets, failed: 0, skipped: clients.length - waTargets },
+                email: { sent: 0, failed: 0, skipped: 0 },
+                errors: [],
+                destinations: [],
+                warnings: [
+                    `Envoi WhatsApp démarré pour ${waTargets} numéro(s) sur Bothosting — ` +
+                        `~12 messages/heure max (anti-spam WhatsApp).`,
+                ],
+            });
+            setImmediate(() => {
+                deliverClientsBatch(clients, {
+                    message,
+                    subject,
+                    html,
+                    channels,
+                    testOnly,
+                    offreEteWhatsapp,
+                }).catch((err) => console.error('[send-to-clients] background:', err.message));
+            });
+            return;
+        }
 
+        const results = await deliverClientsBatch(clients, {
+            message,
+            subject,
+            html,
+            channels,
+            testOnly,
+            offreEteWhatsapp,
+        });
         res.json({ success: true, clients: clients.length, ...results });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1749,7 +1822,7 @@ app.post('/api/send-to-promoteurs', async (req, res) => {
                 promoteurs = fallback
                     ? [fallback]
                     : [{
-                        nom: 'atangana',
+                        nom: getTestContactLabel(),
                         email: TEST_TARGET_EMAIL,
                         telephone: TEST_TARGET_PHONE,
                         id: null,
@@ -1885,7 +1958,7 @@ app.post('/api/send-to-boxeurs', async (req, res) => {
                 boxeurs = fallback
                     ? [fallback]
                     : [{
-                        nom: 'atangana',
+                        nom: getTestContactLabel(),
                         email: TEST_TARGET_EMAIL,
                         telephone: TEST_TARGET_PHONE,
                         id: null,
