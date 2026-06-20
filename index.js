@@ -42,6 +42,7 @@ const {
     fetchBoxeursWithEmail,
     fetchClientsByIds,
     countPortetClientsForBroadcast,
+    fetchAllPaginated,
     clientDisplayName,
     getSupabase,
     fetchUnreadInbound,
@@ -1674,18 +1675,19 @@ async function resolveClientsForSend({ clientIds, testOnly, broadcast }) {
     }
     if (broadcast === 'email' || broadcast === 'phone' || broadcast === 'whatsapp' || broadcast === 'all') {
         const sb = getSupabase();
-        let query = sb
-            .from('portet_clients')
-            .select('id, prenom, nom, telephone, email')
-            .order('created_at', { ascending: false });
-        if (broadcast === 'email') {
-            query = query.not('email', 'is', null).neq('email', '');
-        } else if (broadcast === 'phone' || broadcast === 'whatsapp') {
-            query = query.not('telephone', 'is', null).neq('telephone', '');
-        }
-        const { data, error } = await query;
-        if (error) throw error;
-        return data || [];
+        const makeQuery = () => {
+            let query = sb
+                .from('portet_clients')
+                .select('id, prenom, nom, telephone, email')
+                .order('created_at', { ascending: false });
+            if (broadcast === 'email') {
+                query = query.not('email', 'is', null).neq('email', '');
+            } else if (broadcast === 'phone' || broadcast === 'whatsapp') {
+                query = query.not('telephone', 'is', null).neq('telephone', '');
+            }
+            return query;
+        };
+        return fetchAllPaginated(makeQuery);
     }
     if (Array.isArray(clientIds) && clientIds.length) {
         return fetchClientsByIds(clientIds);
@@ -1756,18 +1758,36 @@ app.post('/api/send-to-clients', async (req, res) => {
             });
 
             setImmediate(() => {
-                resolveClientsForSend({ clientIds, testOnly: false, broadcast })
-                    .then((clients) =>
-                        deliverClientsBatch(clients, {
+                (async () => {
+                    if (!isConnected || !sock) {
+                        console.error('[send-to-clients] background annulé : WhatsApp non connecté');
+                        return;
+                    }
+                    try {
+                        const clients = await resolveClientsForSend({
+                            clientIds,
+                            testOnly: false,
+                            broadcast,
+                        });
+                        console.log(
+                            `[send-to-clients] background démarré — ${clients.length} client(s), WA connecté`
+                        );
+                        const results = await deliverClientsBatch(clients, {
                             message,
                             subject,
                             html,
                             channels,
                             testOnly: false,
                             offreEteWhatsapp,
-                        })
-                    )
-                    .catch((err) => console.error('[send-to-clients] background:', err.message));
+                        });
+                        console.log(
+                            `[send-to-clients] background terminé — WA envoyés: ${results.whatsapp.sent}, ` +
+                                `échecs: ${results.whatsapp.failed}, ignorés: ${results.whatsapp.skipped}`
+                        );
+                    } catch (err) {
+                        console.error('[send-to-clients] background:', err.message);
+                    }
+                })();
             });
             return;
         }

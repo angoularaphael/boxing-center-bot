@@ -2,6 +2,7 @@ const { createClient } = require('@supabase/supabase-js');
 
 const supabaseUrl = process.env.SUPABASE_URL || '';
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const SUPABASE_PAGE_SIZE = 1000;
 
 let client = null;
 
@@ -15,6 +16,23 @@ function getSupabase() {
         });
     }
     return client;
+}
+
+async function fetchAllPaginated(makeQuery) {
+    const all = [];
+    let from = 0;
+
+    while (true) {
+        const to = from + SUPABASE_PAGE_SIZE - 1;
+        const { data, error } = await makeQuery().range(from, to);
+        if (error) throw error;
+        const batch = data || [];
+        all.push(...batch);
+        if (batch.length < SUPABASE_PAGE_SIZE) break;
+        from += SUPABASE_PAGE_SIZE;
+    }
+
+    return all;
 }
 
 async function fetchManagers({ search = '', contactType = '' } = {}) {
@@ -408,6 +426,7 @@ async function markOutboundWhatsAppRead(waMessageId) {
 
 module.exports = {
     getSupabase,
+    fetchAllPaginated,
     fetchManagers,
     fetchManagerById,
     fetchTestManager,
