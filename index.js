@@ -53,6 +53,7 @@ const {
     createOutboundMessage,
     updateOutboundMessage,
     markOutboundWhatsAppRead,
+    wasCampaignSentToRecipient,
 } = require('./supabase');
 const { sendBrevoEmail, verifyEmailSetup } = require('./email');
 const {
@@ -112,6 +113,9 @@ const WA_MAX_LEN = 3800;
 /** proto.WebMessageInfo.Status.READ — accusé de lecture WhatsApp (2 coches bleues). */
 const WA_MSG_STATUS_READ = 4;
 const OFFRE_ETE_CAMPAIGN_TAG = 'offre_ete_2026';
+const BOT_INSTANCE_ID = String(
+  process.env.BOT_INSTANCE_ID || process.env.BOT_SLUG || process.env.LOCATION_SLUG || 'default'
+).trim();
 
 function normalizePhone(input) {
     if (!input) return '';
@@ -191,6 +195,22 @@ function verifyApiSecret(req, res) {
         return false;
     }
     return true;
+}
+
+function rejectIfWhatsAppDisconnected(res) {
+    if (isConnected && sock) return false;
+    res.status(503).json({
+        error:
+            'WhatsApp non connecté — ouvrez Admin → WhatsApp sur gestion-manager ' +
+            'et reconnectez le bot (QR ou code d\'appairage).',
+        connected: false,
+    });
+    return true;
+}
+
+function rejectWhatsAppIfDisconnected(channels, res) {
+    if (!Array.isArray(channels) || !channels.includes('whatsapp')) return false;
+    return rejectIfWhatsAppDisconnected(res);
 }
 
 function isPnJid(jid) {
@@ -607,6 +627,10 @@ async function sendWhatsAppMessage(
     if (!isValidPhoneDigits(cleanNumber)) {
         throw new Error(`Numéro invalide : ${phone}`);
     }
+    if (campaign && (await wasCampaignSentToRecipient(campaign, cleanNumber))) {
+        console.log(`[BOT] Campagne ${campaign} — skip doublon +${cleanNumber}`);
+        return { success: true, skipped: true, duplicate: true, phone: cleanNumber };
+    }
     const fullMessage = appendWhatsAppSignature(message);
     const record = await createOutboundMessage({
         manager_id: (promoterId || boxeurId || clientId) ? null : managerId,
@@ -614,6 +638,7 @@ async function sendWhatsAppMessage(
         boxeur_id: boxeurId || null,
         client_id: clientId || null,
         campaign: campaign || null,
+        bot_instance: BOT_INSTANCE_ID,
         channel: 'whatsapp',
         recipient: cleanNumber,
         subject: null,
@@ -638,6 +663,7 @@ async function sendWhatsAppMessage(
             sent_at: new Date().toISOString(),
             wa_message_id: waMessageId,
         });
+        console.log(`[BOT] WhatsApp envoyé → +${cleanNumber}${campaign ? ` (${campaign})` : ''}`);
         return { success: true, id: record.id, phone: cleanNumber, waMessageId };
     } catch (err) {
         await updateOutboundMessage(record.id, {
@@ -1037,6 +1063,7 @@ app.get('/api/status', (req, res) => {
         qr: currentQrBase64,
         pairingCode,
         qrError,
+        bot_instance: BOT_INSTANCE_ID,
         mandatoryPhone: MANDATORY_ADMIN_PHONE,
         authorizedPhones: getAllAuthorizedPhones(),
         siteUrl: SITE_URL,
@@ -1212,6 +1239,7 @@ app.post('/api/inbound-messages/mark-read', async (req, res) => {
 
 app.post('/api/send-message', async (req, res) => {
     if (!verifyApiSecret(req, res)) return;
+    if (rejectIfWhatsAppDisconnected(res)) return;
     const { phone, message, manager_id: managerId } = req.body;
     if (!message) return res.status(400).json({ error: 'message required' });
     if (!phone) return res.status(400).json({ error: 'phone required' });
@@ -1225,6 +1253,7 @@ app.post('/api/send-message', async (req, res) => {
 
 app.post('/api/send-bulk', async (req, res) => {
     if (!verifyApiSecret(req, res)) return;
+    if (rejectIfWhatsAppDisconnected(res)) return;
     const { phones, message } = req.body;
     if (!Array.isArray(phones) || !phones.length) {
         return res.status(400).json({ error: 'phones[] required' });
@@ -1343,7 +1372,7 @@ const BULK_SEND_DEDUP_MS = 15 * 60 * 1000;
 /** Espacement envois WhatsApp — limite blocage anti-spam (~24 h). */
 const WA_BULK_DELAY_MS = Math.max(15000, Number(process.env.WA_BULK_DELAY_MS) || 50000);
 const WA_BULK_DELAY_JITTER_MS = Math.max(0, Number(process.env.WA_BULK_DELAY_JITTER_MS) || 20000);
-const WA_BULK_MAX_PER_HOUR = Math.max(1, Number(process.env.WA_BULK_MAX_PER_HOUR) || 12);
+const WA_BULK_MAX_PER_HOUR = Math.max(1, Number(process.env.WA_BULK_MAX_PER_HOUR) || 13);
 const waBulkSendTimestamps = [];
 
 function pruneWaBulkTimestamps() {
@@ -1414,6 +1443,12 @@ async function runBulkDelivery(recipients, deliverFn, ctx, { testOnly = false } 
         if (channels.includes('whatsapp')) {
             if (results.whatsapp.sent > sentBefore) {
                 recordWhatsAppBulkSend();
+                if (results.whatsapp.sent === 1 || results.whatsapp.sent % 10 === 0) {
+                    console.log(
+                        `[BOT] Campagne WA — ${results.whatsapp.sent} envoyé(s), ` +
+                            `${recipients.length - i - 1} restant(s) dans ce lot`
+                    );
+                }
             }
             const lastErr =
                 results.errors.length > errorsBefore
@@ -1522,6 +1557,7 @@ app.post('/api/send-to-managers', async (req, res) => {
     if (!Array.isArray(channels) || !channels.length) {
         return res.status(400).json({ error: 'channels required' });
     }
+    if (rejectWhatsAppIfDisconnected(channels, res)) return;
 
     try {
         if (!testOnly) {
@@ -1616,7 +1652,7 @@ async function deliverToClient(client, { message, subject, html, channels, resul
                 return;
             }
             try {
-                await sendWhatsAppMessage(
+                const sent = await sendWhatsAppMessage(
                     client.telephone,
                     waMessage,
                     null,
@@ -1625,6 +1661,10 @@ async function deliverToClient(client, { message, subject, html, channels, resul
                     client.id || null,
                     offre_ete_whatsapp ? OFFRE_ETE_CAMPAIGN_TAG : null
                 );
+                if (sent.skipped) {
+                    results.whatsapp.skipped++;
+                    return;
+                }
                 results.whatsapp.sent++;
                 results.destinations.push({
                     channel: 'whatsapp',
@@ -1735,6 +1775,7 @@ app.post('/api/send-to-clients', async (req, res) => {
     if (!Array.isArray(channels) || !channels.length) {
         return res.status(400).json({ error: 'channels required' });
     }
+    if (rejectWhatsAppIfDisconnected(channels, res)) return;
 
     try {
         if (!testOnly) {
@@ -1951,6 +1992,7 @@ app.post('/api/send-to-promoteurs', async (req, res) => {
     if (!Array.isArray(channels) || !channels.length) {
         return res.status(400).json({ error: 'channels required' });
     }
+    if (rejectWhatsAppIfDisconnected(channels, res)) return;
 
     try {
         let promoteurs = [];
@@ -2087,6 +2129,7 @@ app.post('/api/send-to-boxeurs', async (req, res) => {
     if (!Array.isArray(channels) || !channels.length) {
         return res.status(400).json({ error: 'channels required' });
     }
+    if (rejectWhatsAppIfDisconnected(channels, res)) return;
 
     try {
         let boxeurs = [];
@@ -2191,6 +2234,7 @@ app.post('/api/send-to-groupe-chabane', async (req, res) => {
     if (channels.includes('email')) {
         return res.status(400).json({ error: 'Groupe Chabane : WhatsApp uniquement' });
     }
+    if (rejectWhatsAppIfDisconnected(channels, res)) return;
 
     try {
         const contacts = resolveGroupeChabaneForSend({
