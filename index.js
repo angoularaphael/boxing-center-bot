@@ -1056,6 +1056,15 @@ setTimeout(() => {
 
 // --- API ---
 
+app.get('/api/health', (req, res) => {
+    res.json({
+        ok: true,
+        connected: isConnected,
+        connecting: isLinking && !isConnected,
+        bot_instance: BOT_INSTANCE_ID,
+    });
+});
+
 app.get('/api/status', (req, res) => {
     res.json({
         connected: isConnected,
