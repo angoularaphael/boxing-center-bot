@@ -394,6 +394,22 @@ async function markInboundRead(ids) {
     if (error) throw error;
 }
 
+async function wasCampaignSentToRecipient(campaign, recipient) {
+    if (!campaign || !recipient) return false;
+    const sb = getSupabase();
+    const { data, error } = await sb
+        .from('outbound_messages')
+        .select('id')
+        .eq('campaign', campaign)
+        .eq('channel', 'whatsapp')
+        .eq('recipient', recipient)
+        .in('status', ['sent', 'pending'])
+        .limit(1)
+        .maybeSingle();
+    if (error) throw error;
+    return Boolean(data);
+}
+
 async function createOutboundMessage(payload) {
     const sb = getSupabase();
     const { data, error } = await sb.from('outbound_messages').insert(payload).select().single();
@@ -460,4 +476,5 @@ module.exports = {
     createOutboundMessage,
     updateOutboundMessage,
     markOutboundWhatsAppRead,
+    wasCampaignSentToRecipient,
 };
