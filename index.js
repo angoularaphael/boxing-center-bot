@@ -1775,6 +1775,34 @@ async function deliverToClient(client, { message, subject, html, channels, resul
     await Promise.all(tasks);
 }
 
+async function filterClientsForCampaignWhatsApp(clients, offreEteWhatsapp) {
+    if (!offreEteWhatsapp || !clients?.length) return clients || [];
+    const filtered = [];
+    const seen = new Set();
+    let excluded = 0;
+    for (const client of clients) {
+        const phone = toWhatsAppDigits(client.telephone);
+        if (!phone) continue;
+        if (seen.has(phone)) {
+            excluded++;
+            continue;
+        }
+        seen.add(phone);
+        if (await wasCampaignSentToRecipient(OFFRE_ETE_CAMPAIGN_TAG, phone)) {
+            excluded++;
+            console.log(
+                `[BOT] Campagne ${OFFRE_ETE_CAMPAIGN_TAG} — exclu du lot (déjà contacté) +${phone}`
+            );
+            continue;
+        }
+        filtered.push(client);
+    }
+    if (excluded) {
+        console.log(`[BOT] Campagne — ${excluded} doublon(s) retiré(s) du lot avant envoi`);
+    }
+    return filtered;
+}
+
 async function deliverClientsBatch(clients, { message, subject, html, channels, testOnly, offreEteWhatsapp, maxWhatsappSends = 0 }) {
     const results = {
         whatsapp: { sent: 0, failed: 0, skipped: 0, duplicates: 0 },
@@ -1901,11 +1929,18 @@ app.post('/api/send-to-clients', async (req, res) => {
                         return;
                     }
                     try {
-                        const clients = await resolveClientsForSend({
+                        let clients = await resolveClientsForSend({
                             clientIds,
                             testOnly: false,
                             broadcast,
                         });
+                        if (offreEteWhatsapp) {
+                            clients = await filterClientsForCampaignWhatsApp(clients, true);
+                        }
+                        if (!clients.length) {
+                            console.log('[send-to-clients] background annulé : aucun nouveau destinataire');
+                            return;
+                        }
                         console.log(
                             `[send-to-clients] background démarré — ${clients.length} client(s), WA connecté`
                         );
@@ -1916,9 +1951,11 @@ app.post('/api/send-to-clients', async (req, res) => {
                             channels,
                             testOnly: false,
                             offreEteWhatsapp,
+                            maxWhatsappSends,
                         });
                         console.log(
                             `[send-to-clients] background terminé — WA envoyés: ${results.whatsapp.sent}, ` +
+                                `doublons: ${results.whatsapp.duplicates || 0}, ` +
                                 `échecs: ${results.whatsapp.failed}, ignorés: ${results.whatsapp.skipped}`
                         );
                     } catch (err) {
@@ -1929,15 +1966,21 @@ app.post('/api/send-to-clients', async (req, res) => {
             return;
         }
 
-        const clients = await resolveClientsForSend({ clientIds, testOnly, broadcast });
-        if (clients === null) {
+        const clientsRaw = await resolveClientsForSend({ clientIds, testOnly, broadcast });
+        if (clientsRaw === null) {
             return res.status(400).json({ error: 'client_ids, broadcast ou test_only requis' });
         }
         if (broadcast && !['email', 'phone', 'whatsapp', 'all'].includes(broadcast)) {
             return res.status(400).json({ error: 'broadcast invalide (email, phone, all)' });
         }
+        let clients = clientsRaw;
+        if (offreEteWhatsapp && !testOnly && channels.includes('whatsapp')) {
+            clients = await filterClientsForCampaignWhatsApp(clients, true);
+        }
         if (!clients.length) {
-            return res.status(400).json({ error: 'Aucun client trouvé pour cet envoi' });
+            return res.status(400).json({
+                error: 'Aucun nouveau client à contacter — doublons campagne déjà exclus.',
+            });
         }
 
         const waTargets = channels.includes('whatsapp')
