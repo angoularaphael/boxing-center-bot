@@ -9,15 +9,63 @@ const path = require('path');
 const GITHUB_REPO_URL = process.env.BOT_GITHUB_REPO || 'https://github.com/angoularaphael/boxing-center-bot.git';
 const APP_DIR_NAME = process.env.BOT_APP_DIR || 'boxing-center-bot-app';
 const APP_DIR = path.join(__dirname, APP_DIR_NAME);
-const BOT_PORT = process.env.SERVER_PORT || process.env.PORT || '20042';
+const ROOT_ENV = path.join(__dirname, '.env');
+
+/** Charge le .env racine (Bothosting) avant de lire PORT — évite le fallback 20042. */
+function loadRootEnvIntoProcess() {
+    if (!fs.existsSync(ROOT_ENV)) return;
+    const text = fs.readFileSync(ROOT_ENV, 'utf8');
+    for (const line of text.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eq = trimmed.indexOf('=');
+        if (eq < 1) continue;
+        const key = trimmed.slice(0, eq).trim();
+        let val = trimmed.slice(eq + 1).trim();
+        if (
+            (val.startsWith('"') && val.endsWith('"')) ||
+            (val.startsWith("'") && val.endsWith("'"))
+        ) {
+            val = val.slice(1, -1);
+        }
+        if (process.env[key] == null || process.env[key] === '') {
+            process.env[key] = val;
+        }
+    }
+}
+
+function resolveBotPort() {
+    const raw = process.env.SERVER_PORT || process.env.PORT;
+    const port = raw != null ? String(raw).trim() : '';
+    if (port && /^\d+$/.test(port)) return port;
+    console.error(
+        '❌ SERVER_PORT ou PORT manquant — ajoutez-le dans .env à côté de index.js ' +
+            '(ex. 21334 Minimes, 20405 Saint-Cyprien, 21357 Ramonville).'
+    );
+    process.exit(1);
+}
+
+loadRootEnvIntoProcess();
+const BOT_PORT = resolveBotPort();
 
 const ENV_KEYS = [
     'PORT',
+    'SERVER_PORT',
+    'BOT_INSTANCE_ID',
+    'BOT_PUBLIC_HOST',
     'SITE_API_SECRET',
     'NEXT_PUBLIC_SITE_URL',
     'SUPABASE_URL',
     'SUPABASE_SERVICE_ROLE_KEY',
+    'SUPABASE_ANON_KEY',
     'MANDATORY_ADMIN_PHONE',
+    'CAMPAIGN_TEST_PHONE',
+    'CAMPAIGN_TEST_EMAIL',
+    'WA_BULK_WINDOW_MS',
+    'WA_BULK_MAX_PER_WINDOW',
+    'WA_BULK_MAX_PER_HOUR',
+    'WA_BULK_DELAY_MS',
+    'WA_BULK_DELAY_JITTER_MS',
     'BREVO_API_KEY',
     'BREVO_SMTP_LOGIN',
     'BREVO_SMTP_KEY',
@@ -30,7 +78,6 @@ const ENV_KEYS = [
     'BOXING_CENTER_LOGO_URL',
     'RECEPTION_EMAIL',
     'BREVO_REPLY_TO',
-    'SERVER_PORT',
 ];
 
 console.log('=== BOXING CENTER BOT — BOTHOSTING ===');
@@ -41,10 +88,13 @@ try {
         let data = '';
         res.on('data', (c) => { data += c; });
         res.on('end', () => {
+            const host = String(process.env.BOT_PUBLIC_HOST || process.env.BOT_HOST || '').trim();
             console.log('\n🌍 ==================================================');
-            console.log('🌍 URL BOT pour Vercel (NEXT_PUBLIC_WHATSAPP_BOT_URL) :');
-            console.log(`🌍   http://us2.bot-hosting.net:${BOT_PORT}`);
-            console.log(`🌍   (IP : http://${data.trim()}:${BOT_PORT})`);
+            console.log('🌍 URL BOT pour Vercel (WHATSAPP_BOT_URL_*) :');
+            if (host) {
+                console.log(`🌍   http://${host}:${BOT_PORT}`);
+            }
+            console.log(`🌍   http://${data.trim()}:${BOT_PORT}`);
             console.log('🌍 ==================================================\n');
         });
     }).on('error', () => {});
@@ -90,7 +140,6 @@ function buildEnv() {
     return `${lines.join('\n')}\n`;
 }
 
-const ROOT_ENV = path.join(__dirname, '.env');
 const APP_ENV = path.join(APP_DIR, '.env');
 
 function syncEnvFile() {

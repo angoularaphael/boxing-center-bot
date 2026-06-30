@@ -305,6 +305,7 @@ const BOT_COMMANDS = new Set([
     '.unauthorise', '.unauthorize', '.unautorise',
     '.contacts-csv', '.contactscsv', '.export-contacts',
     '.groupe-chabane-numeros', '.groupe-chabane-phones',
+    '.prt',
 ]);
 
 function isKnownBotCommand(cleanText, cmd) {
@@ -346,6 +347,7 @@ function getMenuText() {
         '',
         '*Outils*',
         '`.contacts-csv` — CSV depuis contacts (répondre au message)',
+        '`.prt` — Quitter le groupe (à taper dans le groupe)',
         '',
         '*Tests & admin*',
         '`.test`',
@@ -390,6 +392,7 @@ function getGuideText() {
         '',
         '*Outils*',
         '• `.contacts-csv` — Répondre à un message contenant des contacts pour recevoir un CSV',
+        '• `.prt` — Faire quitter le bot du groupe (admin uniquement, dans le groupe)',
         '',
         '*Tests & admin*',
         `• \`.test\` — Envoi test WA + email (${getTestContactLabel()} : ${TEST_TARGET_PHONE} / ${TEST_TARGET_EMAIL})`,
@@ -827,6 +830,24 @@ async function handleIncomingMessages(m) {
                     telephone: c.telephone,
                 }));
                 await sendLongMessage(sender, formatPhoneList(sample, rows.length, 'Groupe Chabane'));
+            } else if (cmd === '.prt') {
+                if (!sender.endsWith('@g.us')) {
+                    await sock.sendMessage(sender, {
+                        text: '❌ `.prt` doit être tapé *dans le groupe* que le bot doit quitter.',
+                    });
+                    continue;
+                }
+                let groupName = 'ce groupe';
+                try {
+                    const meta = await sock.groupMetadata(sender);
+                    if (meta?.subject) groupName = meta.subject;
+                } catch (_) {
+                    /* metadata optionnelle */
+                }
+                await sock.sendMessage(sender, {
+                    text: `👋 Le bot quitte *${groupName}*…`,
+                });
+                await sock.groupLeave(sender);
             } else if (
                 cmd === '.contacts-csv' ||
                 cmd === '.contactscsv' ||
@@ -1272,7 +1293,7 @@ app.post('/api/send-bulk', async (req, res) => {
     for (const phone of phones) {
         if (!canSendWhatsAppBulkNow()) {
             results.warnings.push(
-                `Limite horaire WhatsApp (${WA_BULK_MAX_PER_HOUR}/h) atteinte — envoi arrêté.`
+                `Limite WhatsApp (${WA_BULK_MAX_PER_WINDOW}/${Math.round(WA_BULK_WINDOW_MS / 60000)} min) atteinte — envoi arrêté.`
             );
             results.failed += phones.length - results.sent - results.failed;
             break;
@@ -1379,13 +1400,20 @@ const RECENT_BULK_SENDS = new Map();
 const BULK_SEND_DEDUP_MS = 15 * 60 * 1000;
 
 /** Espacement envois WhatsApp — limite blocage anti-spam (~24 h). */
-const WA_BULK_DELAY_MS = Math.max(15000, Number(process.env.WA_BULK_DELAY_MS) || 50000);
-const WA_BULK_DELAY_JITTER_MS = Math.max(0, Number(process.env.WA_BULK_DELAY_JITTER_MS) || 20000);
-const WA_BULK_MAX_PER_HOUR = Math.max(1, Number(process.env.WA_BULK_MAX_PER_HOUR) || 13);
+const WA_BULK_WINDOW_MS = Math.max(60_000, Number(process.env.WA_BULK_WINDOW_MS) || 30 * 60 * 1000);
+const WA_BULK_MAX_PER_WINDOW = Math.max(
+    1,
+    Number(process.env.WA_BULK_MAX_PER_WINDOW || process.env.WA_BULK_MAX_PER_HOUR || 12)
+);
+const WA_BULK_DELAY_MS = Math.max(
+    15_000,
+    Number(process.env.WA_BULK_DELAY_MS) || Math.floor(WA_BULK_WINDOW_MS / WA_BULK_MAX_PER_WINDOW)
+);
+const WA_BULK_DELAY_JITTER_MS = Math.max(0, Number(process.env.WA_BULK_DELAY_JITTER_MS) || 20_000);
 const waBulkSendTimestamps = [];
 
 function pruneWaBulkTimestamps() {
-    const cutoff = Date.now() - 60 * 60 * 1000;
+    const cutoff = Date.now() - WA_BULK_WINDOW_MS;
     while (waBulkSendTimestamps.length && waBulkSendTimestamps[0] < cutoff) {
         waBulkSendTimestamps.shift();
     }
@@ -1393,7 +1421,7 @@ function pruneWaBulkTimestamps() {
 
 function canSendWhatsAppBulkNow() {
     pruneWaBulkTimestamps();
-    return waBulkSendTimestamps.length < WA_BULK_MAX_PER_HOUR;
+    return waBulkSendTimestamps.length < WA_BULK_MAX_PER_WINDOW;
 }
 
 function recordWhatsAppBulkSend() {
@@ -1438,8 +1466,8 @@ async function runBulkDelivery(recipients, deliverFn, ctx, { testOnly = false } 
             const remaining = recipients.length - i;
             results.whatsapp.skipped += remaining;
             results.warnings.push(
-                `WhatsApp : limite horaire (${WA_BULK_MAX_PER_HOUR}/h) atteinte. ` +
-                `${remaining} destinataire(s) non contacté(s) — utilisez l'email ou réessayez dans 1 h.`
+                `WhatsApp : limite (${WA_BULK_MAX_PER_WINDOW} / ${Math.round(WA_BULK_WINDOW_MS / 60000)} min) atteinte. ` +
+                `${remaining} destinataire(s) non contacté(s) — réessayez dans ${Math.round(WA_BULK_WINDOW_MS / 60000)} min.`
             );
             break;
         }
@@ -1642,7 +1670,7 @@ app.post('/api/send-to-managers', async (req, res) => {
     }
 });
 
-async function deliverToClient(client, { message, subject, html, channels, results, offre_ete_whatsapp }) {
+async function deliverToClient(client, { message, subject, html, channels, results, offre_ete_whatsapp, test_only }) {
     const mailSubject = subject || 'Message Boxing Center';
     const label = clientDisplayName(client);
     const tasks = [];
@@ -1653,6 +1681,7 @@ async function deliverToClient(client, { message, subject, html, channels, resul
             salle: client.salle,
         })
         : message;
+    const campaignTag = offre_ete_whatsapp && !test_only ? OFFRE_ETE_CAMPAIGN_TAG : null;
 
     if (channels.includes('whatsapp')) {
         tasks.push((async () => {
@@ -1668,7 +1697,7 @@ async function deliverToClient(client, { message, subject, html, channels, resul
                     null,
                     null,
                     client.id || null,
-                    offre_ete_whatsapp ? OFFRE_ETE_CAMPAIGN_TAG : null
+                    campaignTag
                 );
                 if (sent.skipped) {
                     results.whatsapp.skipped++;
@@ -1730,7 +1759,15 @@ async function deliverClientsBatch(clients, { message, subject, html, channels, 
         destinations: [],
         warnings: [],
     };
-    const ctx = { message, subject, html, channels, results, offre_ete_whatsapp: offreEteWhatsapp };
+    const ctx = {
+        message,
+        subject,
+        html,
+        channels,
+        results,
+        offre_ete_whatsapp: offreEteWhatsapp,
+        test_only: testOnly,
+    };
     await runBulkDelivery(clients, deliverToClient, ctx, { testOnly });
     return results;
 }
@@ -1826,7 +1863,7 @@ app.post('/api/send-to-clients', async (req, res) => {
                 destinations: [],
                 warnings: [
                     `Envoi WhatsApp démarré pour ${waTargets} numéro(s) sur Bothosting — ` +
-                        `~12 messages/heure max (anti-spam WhatsApp).`,
+                        `12 messages / 30 min max (anti-spam WhatsApp).`,
                     'Chaque message : prénom + variante aléatoire parmi 14 textes.',
                 ],
             });
@@ -1893,7 +1930,7 @@ app.post('/api/send-to-clients', async (req, res) => {
                 destinations: [],
                 warnings: [
                     `Envoi WhatsApp démarré pour ${waTargets} numéro(s) sur Bothosting — ` +
-                        `~12 messages/heure max (anti-spam WhatsApp).`,
+                        `12 messages / 30 min max (anti-spam WhatsApp).`,
                     'Chaque message : prénom + variante aléatoire parmi 14 textes.',
                 ],
             });
