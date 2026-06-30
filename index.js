@@ -242,7 +242,7 @@ function cacheLidFromMessage(key) {
 function resolveSenderPhone(msg) {
     const key = msg.key || {};
     if (msg.key.fromMe) {
-        return sock?.user?.id ? normalizePhone(sock.user.id) : '';
+        return getConnectedWhatsAppPhone();
     }
     for (const altJid of [key.participantAlt, key.remoteJidAlt]) {
         if (altJid && isPnJid(altJid)) {
@@ -1075,6 +1075,11 @@ setTimeout(() => {
     }
 }, 3000);
 
+function getConnectedWhatsAppPhone() {
+    if (!isConnected || !sock?.user?.id) return '';
+    return normalizePhone(sock.user.id);
+}
+
 // --- API ---
 
 app.get('/api/health', (req, res) => {
@@ -1087,6 +1092,7 @@ app.get('/api/health', (req, res) => {
 });
 
 app.get('/api/status', (req, res) => {
+    const connectedWhatsApp = getConnectedWhatsAppPhone();
     res.json({
         connected: isConnected,
         connecting: isLinking && !isConnected,
@@ -1094,6 +1100,7 @@ app.get('/api/status', (req, res) => {
         pairingCode,
         qrError,
         bot_instance: BOT_INSTANCE_ID,
+        connectedWhatsApp: connectedWhatsApp || null,
         mandatoryPhone: MANDATORY_ADMIN_PHONE,
         authorizedPhones: getAllAuthorizedPhones(),
         siteUrl: SITE_URL,
