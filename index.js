@@ -1459,7 +1459,7 @@ function shouldParallelBulkDelivery(channels, count, testOnly) {
     return count <= 3;
 }
 
-async function runBulkDelivery(recipients, deliverFn, ctx, { testOnly = false } = {}) {
+async function runBulkDelivery(recipients, deliverFn, ctx, { testOnly = false, maxWhatsappSends = 0 } = {}) {
     const { channels, results } = ctx;
     if (!results.warnings) results.warnings = [];
 
@@ -1469,6 +1469,8 @@ async function runBulkDelivery(recipients, deliverFn, ctx, { testOnly = false } 
     }
 
     for (let i = 0; i < recipients.length; i++) {
+        if (maxWhatsappSends > 0 && results.whatsapp.sent >= maxWhatsappSends) break;
+
         if (channels.includes('whatsapp') && !testOnly && !canSendWhatsAppBulkNow()) {
             const remaining = recipients.length - i;
             results.whatsapp.skipped += remaining;
@@ -1480,19 +1482,27 @@ async function runBulkDelivery(recipients, deliverFn, ctx, { testOnly = false } 
         }
 
         const sentBefore = results.whatsapp.sent;
+        const dupBefore = results.whatsapp.duplicates || 0;
         const errorsBefore = results.errors.length;
 
         await deliverFn(recipients[i], ctx);
 
         if (channels.includes('whatsapp')) {
+            const wasDuplicate = (results.whatsapp.duplicates || 0) > dupBefore;
             if (results.whatsapp.sent > sentBefore) {
                 recordWhatsAppBulkSend();
+                const remainingInLot = maxWhatsappSends
+                    ? Math.max(0, maxWhatsappSends - results.whatsapp.sent)
+                    : recipients.length - i - 1;
                 if (results.whatsapp.sent === 1 || results.whatsapp.sent % 10 === 0) {
                     console.log(
                         `[BOT] Campagne WA — ${results.whatsapp.sent} envoyé(s), ` +
-                            `${recipients.length - i - 1} restant(s) dans ce lot`
+                            `${remainingInLot} restant(s) dans ce lot` +
+                            (wasDuplicate ? '' : '')
                     );
                 }
+            } else if (wasDuplicate) {
+                console.log(`[BOT] Campagne ${OFFRE_ETE_CAMPAIGN_TAG} — skip doublon, client suivant`);
             }
             const lastErr =
                 results.errors.length > errorsBefore
@@ -1506,7 +1516,10 @@ async function runBulkDelivery(recipients, deliverFn, ctx, { testOnly = false } 
                 );
                 break;
             }
-            if (i < recipients.length - 1) {
+            const hasMoreToTry =
+                i < recipients.length - 1 &&
+                (!maxWhatsappSends || results.whatsapp.sent < maxWhatsappSends);
+            if (hasMoreToTry && results.whatsapp.sent > sentBefore) {
                 await sleepBetweenWhatsAppBulk();
             }
         }
@@ -1707,7 +1720,11 @@ async function deliverToClient(client, { message, subject, html, channels, resul
                     campaignTag
                 );
                 if (sent.skipped) {
-                    results.whatsapp.skipped++;
+                    if (sent.duplicate) {
+                        results.whatsapp.duplicates = (results.whatsapp.duplicates || 0) + 1;
+                    } else {
+                        results.whatsapp.skipped++;
+                    }
                     return;
                 }
                 results.whatsapp.sent++;
@@ -1758,9 +1775,9 @@ async function deliverToClient(client, { message, subject, html, channels, resul
     await Promise.all(tasks);
 }
 
-async function deliverClientsBatch(clients, { message, subject, html, channels, testOnly, offreEteWhatsapp }) {
+async function deliverClientsBatch(clients, { message, subject, html, channels, testOnly, offreEteWhatsapp, maxWhatsappSends = 0 }) {
     const results = {
-        whatsapp: { sent: 0, failed: 0, skipped: 0 },
+        whatsapp: { sent: 0, failed: 0, skipped: 0, duplicates: 0 },
         email: { sent: 0, failed: 0, skipped: 0 },
         errors: [],
         destinations: [],
@@ -1775,7 +1792,7 @@ async function deliverClientsBatch(clients, { message, subject, html, channels, 
         offre_ete_whatsapp: offreEteWhatsapp,
         test_only: testOnly,
     };
-    await runBulkDelivery(clients, deliverToClient, ctx, { testOnly });
+    await runBulkDelivery(clients, deliverToClient, ctx, { testOnly, maxWhatsappSends });
     return results;
 }
 
@@ -1823,6 +1840,8 @@ app.post('/api/send-to-clients', async (req, res) => {
         broadcast,
         offre_ete_whatsapp: offreEteWhatsapp,
     } = req.body;
+
+    const maxWhatsappSends = Math.max(0, Number(req.body.max_whatsapp_sends) || 0);
 
     if (!message && !offreEteWhatsapp) return res.status(400).json({ error: 'message required' });
     if (!Array.isArray(channels) || !channels.length) {
@@ -1924,6 +1943,7 @@ app.post('/api/send-to-clients', async (req, res) => {
         const waTargets = channels.includes('whatsapp')
             ? clients.filter((c) => c.telephone).length
             : 0;
+        const waQueued = maxWhatsappSends > 0 ? Math.min(maxWhatsappSends, waTargets) : waTargets;
         const runInBackground = channels.includes('whatsapp') && waTargets > 1 && !testOnly;
 
         if (runInBackground) {
@@ -1931,13 +1951,13 @@ app.post('/api/send-to-clients', async (req, res) => {
                 success: true,
                 accepted: true,
                 clients: clients.length,
-                whatsapp: { sent: 0, queued: waTargets, failed: 0, skipped: clients.length - waTargets },
+                whatsapp: { sent: 0, queued: waQueued, failed: 0, skipped: clients.length - waTargets, duplicates: 0 },
                 email: { sent: 0, failed: 0, skipped: 0 },
                 errors: [],
                 destinations: [],
                 warnings: [
-                    `Envoi WhatsApp démarré pour ${waTargets} numéro(s) sur Bothosting — ` +
-                        `12 messages / 30 min max (anti-spam WhatsApp).`,
+                    `Envoi WhatsApp démarré — jusqu'à ${waQueued} nouveau(x) message(s) sur Bothosting ` +
+                        `(${WA_BULK_MAX_PER_WINDOW} max / ${Math.round(WA_BULK_WINDOW_MS / 60000)} min, doublons ignorés).`,
                     'Chaque message : prénom + variante aléatoire parmi 14 textes.',
                 ],
             });
@@ -1949,7 +1969,16 @@ app.post('/api/send-to-clients', async (req, res) => {
                     channels,
                     testOnly,
                     offreEteWhatsapp,
-                }).catch((err) => console.error('[send-to-clients] background:', err.message));
+                    maxWhatsappSends,
+                })
+                    .then((results) => {
+                        console.log(
+                            `[send-to-clients] background terminé — WA envoyés: ${results.whatsapp.sent}, ` +
+                                `doublons: ${results.whatsapp.duplicates || 0}, ` +
+                                `échecs: ${results.whatsapp.failed}, ignorés: ${results.whatsapp.skipped}`
+                        );
+                    })
+                    .catch((err) => console.error('[send-to-clients] background:', err.message));
             });
             return;
         }
@@ -1961,6 +1990,7 @@ app.post('/api/send-to-clients', async (req, res) => {
             channels,
             testOnly,
             offreEteWhatsapp,
+            maxWhatsappSends,
         });
         res.json({ success: true, clients: clients.length, ...results });
     } catch (err) {
