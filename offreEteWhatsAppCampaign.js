@@ -10,110 +10,108 @@ function greetingNameOrFallback(prenom, nom, fallback) {
   return fallback;
 }
 
-/** 13 variantes WhatsApp — message clair : 89€ = abonnement + t-shirt inclus. */
+/** 13 variantes WhatsApp — 89€ : 3 mois cours + accès libre (5 salles). */
 const OFFRE_ETE_WHATSAPP_TEMPLATES = [
   `Salut {prenom} 👋
 
-*89€ tout compris* chez Boxing Center :
-• 3 mois illimités (5 salles, tous les cours)
-• 1 t-shirt offert — *tu ne le paies pas en plus*
+*Offre été Boxing Center* — Toulouse & agglo ☀️
 
-Tu paies *89€ une seule fois*, c'est tout.
+*89€* au lieu de 150€ :
+• *3 mois* de cours illimités
+• *Accès libre* à la salle
+• *5 salles* — boxe, MMA, muay thai, cross…
 
 👉 {lien}`,
 
   `Bonjour {prenom},
 
-Tu paies *89€ une fois*. Tu reçois *3 mois illimités* + *1 t-shirt offert* inclus.
-Rien d'autre à payer.
+Tu paies *89€ une fois* (au lieu de 150€).
+*3 mois* de cours + *accès libre* dans nos *5 salles*.
 
 Commander :
 {lien}`,
 
   `{prenom}, offre été Boxing Center ☀️
 
-*89€ = abonnement 3 mois + t-shirt offert.*
-Pas de supplément pour le t-shirt.
+*89€ = 3 mois cours + accès libre.*
+Économise *61€* sur l'été.
 
 {lien}`,
 
   `Hey {prenom} !
 
-Boxing Center : *89€ tout compris*
-→ 3 mois illimités (boxe, MMA, cross…)
-→ T-shirt offert inclus
+Boxing Center : *89€* (~~150€~~)
+→ *3 mois* cours illimités
+→ *Accès libre* salle
+→ *5 salles* Toulouse & agglo
 
-Une seule commande à 89€ :
 {lien}`,
 
   `Coucou {prenom},
 
-*Tu paies 89€.* Tu as *3 mois* dans nos 5 salles + *le t-shirt offert*.
-Le t-shirt est inclus, pas en plus.
+*Tu paies 89€.* Tu as *3 mois* : tous les cours + accès libre dans *5 salles*.
 
 {lien}`,
 
   `{prenom}, c'est simple 🥊
 
-*89€ une fois* = abonnement 3 mois + t-shirt Boxing Center offert.
+*89€ une fois* = *3 mois cours + accès libre* chez Boxing Center.
 
 {lien}`,
 
   `Bonjour {prenom},
 
-Offre été : *89€ tout compris*
-• Abonnement 3 mois illimité
-• T-shirt offert (inclus dans les 89€)
+Offre été *89€* (au lieu de 150€) :
+• Cours illimités *3 mois*
+• *Accès libre*
+• *5 salles*
 
 {lien}`,
 
   `{prenom} ! Offre Boxing Center ☀️
 
-Pas d'ambiguïté : *89€* = *3 mois* + *t-shirt offert*.
-Tu ne paies pas le t-shirt en plus.
+*89€* pour *3 mois* : cours + accès libre. *5 salles*, une seule commande.
 
 {lien}`,
 
   `Salut {prenom},
 
-*89€* pour *3 mois illimités* chez Boxing Center.
-Le *t-shirt est offert* et inclus dans le prix.
+*89€* — *3 mois* cours & accès libre. Boxe, MMA, cross… *5 salles*.
 
 {lien}`,
 
   `{prenom}, prêt(e) pour l'été ? 💪
 
-*89€ tout compris* : abonnement 3 mois + t-shirt offert.
-Une commande, un paiement.
+*89€ tout compris* : *3 mois* cours + accès libre. Économise *61€*.
 
 {lien}`,
 
   `Hello {prenom},
 
-Boxing Center — *89€ = 3 mois + t-shirt offert*.
-Rien à payer en plus du t-shirt.
+Boxing Center — *89€ = 3 mois cours + accès libre*.
+5 salles, tous les cours inclus.
 
 {lien}`,
 
   `{prenom}, info claire :
 
-Tu paies *89€ une seule fois*.
-Tu reçois *3 mois illimités* + *1 t-shirt offert*.
+Tu paies *89€ une seule fois* (au lieu de 150€).
+*3 mois* cours illimités + accès libre.
 
 {lien}`,
 
   `Bonjour {prenom} 👊
 
-Offre été :
-• *89€ tout compris*
-• *3 mois* — 5 salles, tous les cours
-• *T-shirt offert* inclus
+Offre été 2026 :
+• *89€* (~~150€~~)
+• *3 mois* — cours + accès libre
+• *5 salles* Toulouse & agglo
 
 👉 {lien}`,
 
   `{prenom}, {salle_line}
 
-*89€ tout compris* — 3 mois + t-shirt offert.
+*89€* — *3 mois cours + accès libre* (5 salles).
 
 {lien}`,
 ];
