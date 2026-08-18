@@ -96,7 +96,7 @@ if (!fs.existsSync(AUTH_DIR)) {
 const CONFIG_FILE = path.join(__dirname, 'bot_config.json');
 const MENU_LOGO_PATH = path.join(__dirname, 'assets', 'logo.png');
 const SITE_API_SECRET = process.env.SITE_API_SECRET || '';
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || process.env.BOXING_CENTER_SITE_URL || 'https://gestion-manager.vercel.app';
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || process.env.BOXING_CENTER_SITE_URL || 'https://manager.boxingcenter.fr';
 const RECEPTION_EMAIL = process.env.RECEPTION_EMAIL || process.env.BREVO_REPLY_TO || 'boxingcenter31@gmail.com';
 const SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'suzinabot@11426075.brevosend.com';
 const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'Boxing Center';
@@ -1403,6 +1403,7 @@ async function deliverToManager(mgr, { message, subject, html, channels, results
 }
 
 const { pickRandomOffreEteWhatsAppMessage } = require('./offreEteWhatsAppCampaign');
+const { pickCampaignWhatsApp } = require('./campaignTemplates');
 const RECENT_BULK_SENDS = new Map();
 const BULK_SEND_DEDUP_MS = 15 * 60 * 1000;
 
@@ -1690,11 +1691,18 @@ app.post('/api/send-to-managers', async (req, res) => {
     }
 });
 
-async function deliverToClient(client, { message, subject, html, channels, results, offre_ete_whatsapp, test_only }) {
+async function deliverToClient(client, { message, subject, html, channels, results, offre_ete_whatsapp, campaign_kind, test_only }) {
     const mailSubject = subject || 'Message Boxing Center';
     const label = clientDisplayName(client);
     const tasks = [];
-    const waMessage = offre_ete_whatsapp
+    const kind = String(campaign_kind || client.campaign_kind || '').toLowerCase();
+    const waMessage = kind === 'balma' || kind === 'portet'
+        ? pickCampaignWhatsApp(kind, {
+            prenom: client.prenom,
+            nom: client.nom,
+            seed: client.id,
+        })
+        : offre_ete_whatsapp
         ? pickRandomOffreEteWhatsAppMessage({
             prenom: client.prenom,
             nom: client.nom,
@@ -1803,7 +1811,7 @@ async function filterClientsForCampaignWhatsApp(clients, offreEteWhatsapp) {
     return filtered;
 }
 
-async function deliverClientsBatch(clients, { message, subject, html, channels, testOnly, offreEteWhatsapp, maxWhatsappSends = 0 }) {
+async function deliverClientsBatch(clients, { message, subject, html, channels, testOnly, offreEteWhatsapp, campaignKind, maxWhatsappSends = 0 }) {
     const results = {
         whatsapp: { sent: 0, failed: 0, skipped: 0, duplicates: 0 },
         email: { sent: 0, failed: 0, skipped: 0 },
@@ -1818,6 +1826,7 @@ async function deliverClientsBatch(clients, { message, subject, html, channels, 
         channels,
         results,
         offre_ete_whatsapp: offreEteWhatsapp,
+        campaign_kind: campaignKind,
         test_only: testOnly,
     };
     await runBulkDelivery(clients, deliverToClient, ctx, { testOnly, maxWhatsappSends });
@@ -1867,11 +1876,12 @@ app.post('/api/send-to-clients', async (req, res) => {
         test_only: testOnly,
         broadcast,
         offre_ete_whatsapp: offreEteWhatsapp,
+        campaign_kind: campaignKind,
     } = req.body;
 
     const maxWhatsappSends = Math.max(0, Number(req.body.max_whatsapp_sends) || 0);
 
-    if (!message && !offreEteWhatsapp) return res.status(400).json({ error: 'message required' });
+    if (!message && !offreEteWhatsapp && !campaignKind) return res.status(400).json({ error: 'message required' });
     if (!Array.isArray(channels) || !channels.length) {
         return res.status(400).json({ error: 'channels required' });
     }
@@ -1951,6 +1961,7 @@ app.post('/api/send-to-clients', async (req, res) => {
                             channels,
                             testOnly: false,
                             offreEteWhatsapp,
+                            campaignKind,
                             maxWhatsappSends,
                         });
                         console.log(
@@ -2012,6 +2023,7 @@ app.post('/api/send-to-clients', async (req, res) => {
                     channels,
                     testOnly,
                     offreEteWhatsapp,
+                    campaignKind,
                     maxWhatsappSends,
                 })
                     .then((results) => {
@@ -2033,6 +2045,7 @@ app.post('/api/send-to-clients', async (req, res) => {
             channels,
             testOnly,
             offreEteWhatsapp,
+            campaignKind,
             maxWhatsappSends,
         });
         res.json({ success: true, clients: clients.length, ...results });
