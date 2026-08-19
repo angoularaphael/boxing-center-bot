@@ -1417,7 +1417,7 @@ const WA_BULK_DELAY_MS = Math.max(
     15_000,
     Number(process.env.WA_BULK_DELAY_MS) || Math.floor(WA_BULK_WINDOW_MS / WA_BULK_MAX_PER_WINDOW)
 );
-const WA_BULK_DELAY_JITTER_MS = Math.max(0, Number(process.env.WA_BULK_DELAY_JITTER_MS) || 20_000);
+const WA_BULK_DELAY_JITTER_MS = Math.max(0, Number(process.env.WA_BULK_DELAY_JITTER_MS) || 30_000);
 const waBulkSendTimestamps = [];
 
 function pruneWaBulkTimestamps() {
@@ -1696,7 +1696,7 @@ async function deliverToClient(client, { message, subject, html, channels, resul
     const label = clientDisplayName(client);
     const tasks = [];
     const kind = String(campaign_kind || client.campaign_kind || '').toLowerCase();
-    const waMessage = kind === 'balma' || kind === 'portet'
+    const waMessage = kind === 'balma' || kind === 'portet' || kind === 'offres' || kind === 'promo'
         ? pickCampaignWhatsApp(kind, {
             prenom: client.prenom,
             nom: client.nom,
