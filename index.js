@@ -1876,6 +1876,15 @@ app.post('/api/send-to-clients', async (req, res) => {
     if (!Array.isArray(channels) || !channels.length) {
         return res.status(400).json({ error: 'channels required' });
     }
+    if (
+        channels.includes('whatsapp') &&
+        !testOnly &&
+        (offreEteWhatsapp || String(campaignKind || '').toLowerCase() !== 'balma')
+    ) {
+        return res.status(400).json({
+            error: 'WhatsApp campagne : Balma uniquement (offre été et envois sans tag désactivés).',
+        });
+    }
     if (rejectWhatsAppIfDisconnected(channels, res)) return;
 
     try {
