@@ -703,35 +703,26 @@ async function handleIncomingMessages(m) {
             if (!msg.message || msg.key.fromMe) continue;
             cacheLidFromMessage(msg.key);
 
+            const sender = String(msg.key.remoteJid || '');
+            const isGroup = sender.endsWith('@g.us') || sender.endsWith('@broadcast');
+
             const text = extractText(msg);
             if (!text) continue;
 
-            const sender = msg.key.remoteJid;
             const senderPhone = resolveSenderPhone(msg);
             const cleanText = text.trim().toLowerCase();
             const isCommand = cleanText.startsWith('.');
 
-            if (!isSenderAuthorized(msg)) {
-                if (senderPhone) {
-                    await saveInboundMessage({
-                        fromPhone: senderPhone,
-                        fromName: msg.pushName || null,
-                        body: text.trim(),
-                    });
-                }
-                continue;
+            // Groupes / status : jamais en base (ça a saturé l’egress Supabase).
+            if (!isGroup && senderPhone && (!isSenderAuthorized(msg) || !isCommand)) {
+                await saveInboundMessage({
+                    fromPhone: senderPhone,
+                    fromName: msg.pushName || null,
+                    body: text.trim(),
+                });
             }
 
-            if (!isCommand) {
-                if (senderPhone) {
-                    await saveInboundMessage({
-                        fromPhone: senderPhone,
-                        fromName: msg.pushName || null,
-                        body: text.trim(),
-                    });
-                }
-                continue;
-            }
+            if (!isSenderAuthorized(msg) || !isCommand) continue;
 
             const cmd = cleanText.split(/\s+/)[0].split('(')[0].split(':')[0];
             if (!isKnownBotCommand(cleanText, cmd)) continue;
