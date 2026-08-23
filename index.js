@@ -2433,8 +2433,40 @@ function logBotUrlForVercel(port) {
     }
 }
 
+function startConcoursWaRetry() {
+    const url = String(process.env.CONCOURS_CRON_URL || '').trim();
+    const secret = String(process.env.CONCOURS_CRON_SECRET || '').trim();
+    if (!url) {
+        console.log('Concours WA retry : CONCOURS_CRON_URL absent — ignoré');
+        return;
+    }
+    const interval = Math.max(30000, parseInt(process.env.CONCOURS_CRON_MS || '60000', 10) || 60000);
+    const tick = async () => {
+        try {
+            const { data, status } = await axios.get(url, {
+                headers: secret ? { Authorization: `Bearer ${secret}` } : {},
+                timeout: 25000,
+                validateStatus: () => true,
+            });
+            if (status !== 200) {
+                console.warn('Concours WA retry HTTP', status);
+                return;
+            }
+            if (data && (data.processed || data.sent || data.errors)) {
+                console.log('Concours WA retry', data);
+            }
+        } catch (err) {
+            console.warn('Concours WA retry:', err.message);
+        }
+    };
+    setTimeout(tick, 12000);
+    setInterval(tick, interval);
+    console.log(`Concours WA retry → ${url} toutes les ${interval} ms`);
+}
+
 app.listen(PORT, () => {
     console.log(`Boxing Center Bot — port ${PORT}`);
     console.log(`Site : ${SITE_URL}`);
     logBotUrlForVercel(PORT);
+    startConcoursWaRetry();
 });
