@@ -19,8 +19,28 @@ const HUB = 'https://boutique.boxingcenter.fr/offres-speciales';
 const FROM_EMAIL = process.env.RESEND_SENDER_EMAIL || 'no-reply@boxingcenter.fr';
 const REPLY_TO = 'boxingcentertls@gmail.com';
 const PAIR_GAP_MS = Math.max(1000, parseInt(process.env.OFFRES_PAIR_GAP_MS || '12000', 10) || 12000);
-const DELAY_MS = Math.max(200, parseInt(process.env.OFFRES_HALF_DELAY_MS || '350', 10) || 350);
-const CONCURRENCY = Math.max(1, parseInt(process.env.OFFRES_PAIR_CONCURRENCY || '3', 10) || 3);
+const DELAY_MS = Math.max(200, parseInt(process.env.OFFRES_HALF_DELAY_MS || '800', 10) || 800);
+const CONCURRENCY = Math.max(1, parseInt(process.env.OFFRES_PAIR_CONCURRENCY || '2', 10) || 2);
+/** Resend = 10 req/s sur la clé. 2 bots → ~3,5 req/s chacun. */
+const MIN_GAP_MS = Math.max(150, parseInt(process.env.OFFRES_RESEND_MIN_GAP_MS || '280', 10) || 280);
+
+let nextSlotAt = 0;
+let slotChain = Promise.resolve();
+
+function waitForResendSlot() {
+  const run = slotChain.then(async () => {
+    const now = Date.now();
+    const wait = Math.max(0, nextSlotAt - now);
+    nextSlotAt = Math.max(nextSlotAt, now) + MIN_GAP_MS;
+    if (wait) await sleep(wait);
+  });
+  slotChain = run.catch(() => {});
+  return run;
+}
+
+function pauseResendSlots(ms) {
+  nextSlotAt = Math.max(nextSlotAt, Date.now() + ms);
+}
 
 const state = {
   running: false,
@@ -48,6 +68,9 @@ function snapshot() {
     from1: FROM_1,
     from2: FROM_2,
     gapMs: PAIR_GAP_MS,
+    delayMs: DELAY_MS,
+    concurrency: CONCURRENCY,
+    minGapMs: MIN_GAP_MS,
   };
 }
 
@@ -165,6 +188,7 @@ async function fetchSet(sb, table, column, extra) {
 }
 
 async function sendResend({ apiKey, to, subject, text, fromName }) {
+  await waitForResendSlot();
   let res;
   try {
     res = await fetch('https://api.resend.com/emails', {
@@ -256,8 +280,9 @@ async function sendOne(sb, apiKey, { client, mail, campaign, fromName }) {
           lastErr
         )
       ) {
-        const wait = 15000 * attempt;
+        const wait = 20000 * attempt + Math.floor(Math.random() * 8000);
         log(`RETRY ${fromName} ${client.email} wait ${wait}ms (${lastErr})`);
+        if (err.status === 429 || /too many/i.test(lastErr)) pauseResendSlots(wait);
         await sleep(wait);
         continue;
       }
