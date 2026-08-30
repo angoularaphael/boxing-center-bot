@@ -2524,7 +2524,7 @@ app.post('/api/campaign/balma-david', (req, res) => {
     res.json({
         success: true,
         accepted: true,
-        note: '1 mail David par personne Balma encore non envoyée (balma_cession_2026).',
+        note: '1 mail David : restants + ceux qui avaient déjà eu l’info HTML (balma_david_plain).',
         ...started,
     });
 });

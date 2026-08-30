@@ -1,13 +1,16 @@
 'use strict';
 
 /**
- * Mails Balma restants — 1 mail David (texte brut) par personne.
- * Campagne SQL balma_cession_2026 : ceux déjà envoyés (HTML) sont sautés.
+ * Mails David Balma :
+ *  - restants : jamais contactés (tag balma_cession_2026)
+ *  - prior HTML : déjà eus l’info officielle, reçoivent aussi le mail David
+ *    (tag balma_david_plain — unique SQL distinct, pas de collision)
  */
 
 const { getSupabase } = require('./supabase');
 
 const CAMPAIGN = 'balma_cession_2026';
+const CAMPAIGN_PRIOR = 'balma_david_plain';
 const FROM_NAME = 'David';
 const LIEN = 'https://aventure.boxingcenter.fr';
 const FROM_EMAIL = process.env.RESEND_SENDER_EMAIL || 'no-reply@boxingcenter.fr';
@@ -22,14 +25,18 @@ const state = {
   error: null,
   audience: 0,
   queue: 0,
+  queueRemaining: 0,
+  queuePrior: 0,
   done: 0,
   sent: 0,
+  sentRemaining: 0,
+  sentPrior: 0,
   failed: 0,
   skipped: 0,
 };
 
 function snapshot() {
-  return { ...state, from: FROM_NAME, delayMs: DELAY_MS };
+  return { ...state, from: FROM_NAME, delayMs: DELAY_MS, priorCampaign: CAMPAIGN_PRIOR };
 }
 
 function isBlocked(email) {
@@ -49,6 +56,11 @@ function isBalma(salle) {
     .normalize('NFD')
     .replace(/\p{M}/gu, '');
   return v.includes('balma');
+}
+
+function isDavidMail(subject, body) {
+  const s = `${subject || ''} ${String(body || '').slice(0, 120)}`;
+  return /c[''`’]est\s+david/i.test(s);
 }
 
 function greetingName(prenom, nom) {
@@ -140,6 +152,34 @@ async function fetchSet(sb, table, column, extra) {
   return out;
 }
 
+async function fetchHtmlPriorEmails(sb) {
+  const html = new Set();
+  const pageSize = 1000;
+  let from = 0;
+  for (;;) {
+    const { data, error } = await sb
+      .from('outbound_messages')
+      .select('recipient, subject, body')
+      .eq('campaign', CAMPAIGN)
+      .eq('channel', 'email')
+      .in('status', ['sent', 'pending'])
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    if (!data?.length) break;
+    for (const row of data) {
+      const email = String(row.recipient || '')
+        .trim()
+        .toLowerCase();
+      if (!email) continue;
+      if (isDavidMail(row.subject, row.body)) continue;
+      html.add(email);
+    }
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return html;
+}
+
 async function sendResend({ apiKey, to, subject, text, fromName }) {
   let res;
   try {
@@ -202,9 +242,9 @@ async function mark(sb, id, status, errorMessage) {
   await sb.from('outbound_messages').update(patch).eq('id', id);
 }
 
-async function sendOne(sb, apiKey, { client, mail }) {
+async function sendOne(sb, apiKey, { client, mail, campaign }) {
   const row = await claim(sb, {
-    campaign: CAMPAIGN,
+    campaign,
     email: client.email,
     clientId: client.id,
     subject: mail.subject,
@@ -246,25 +286,31 @@ async function sendOne(sb, apiKey, { client, mail }) {
 }
 
 async function markStalePending(sb) {
-  await sb
-    .from('outbound_messages')
-    .update({ status: 'failed', error: 'pending coupé — relance' })
-    .eq('campaign', CAMPAIGN)
-    .eq('channel', 'email')
-    .eq('status', 'pending');
+  for (const campaign of [CAMPAIGN, CAMPAIGN_PRIOR]) {
+    await sb
+      .from('outbound_messages')
+      .update({ status: 'failed', error: 'pending coupé — relance' })
+      .eq('campaign', campaign)
+      .eq('channel', 'email')
+      .eq('status', 'pending');
+  }
 }
 
 async function runJob({ apiKey }) {
   const sb = getSupabase();
   await markStalePending(sb);
-  log(`SEND start — Balma restants, 1 mail David, concurrency=${CONCURRENCY} delay=${DELAY_MS}ms`);
+  log(`SEND start — restants + prior HTML, 1 mail David, concurrency=${CONCURRENCY} delay=${DELAY_MS}ms`);
 
-  const [clients, unsubscribed, already] = await Promise.all([
+  const [clients, unsubscribed, already, alreadyPrior, htmlPrior] = await Promise.all([
     fetchAllClients(sb),
     fetchSet(sb, 'email_unsubscribes', 'email'),
     fetchSet(sb, 'outbound_messages', 'recipient', (q) =>
       q.eq('campaign', CAMPAIGN).eq('channel', 'email').in('status', ['sent', 'pending'])
     ),
+    fetchSet(sb, 'outbound_messages', 'recipient', (q) =>
+      q.eq('campaign', CAMPAIGN_PRIOR).eq('channel', 'email').in('status', ['sent', 'pending'])
+    ),
+    fetchHtmlPriorEmails(sb),
   ]);
 
   const unique = [];
@@ -281,12 +327,23 @@ async function runJob({ apiKey }) {
     unique.push({ ...client, email });
   }
 
-  const queue = unique.filter((c) => !already.has(c.email));
-  state.audience = unique.length;
-  state.queue = queue.length;
-  log(`audience=${unique.length} already=${already.size} queue=${queue.length}`);
+  const remaining = unique
+    .filter((c) => !already.has(c.email))
+    .map((client) => ({ client, campaign: CAMPAIGN, kind: 'remaining' }));
+  const prior = unique
+    .filter((c) => htmlPrior.has(c.email) && !alreadyPrior.has(c.email))
+    .map((client) => ({ client, campaign: CAMPAIGN_PRIOR, kind: 'prior' }));
 
-  if (queue.some((c) => isBlocked(c.email))) {
+  const queue = remaining.concat(prior);
+  state.audience = unique.length;
+  state.queueRemaining = remaining.length;
+  state.queuePrior = prior.length;
+  state.queue = queue.length;
+  log(
+    `audience=${unique.length} remaining=${remaining.length} priorHtml=${prior.length} htmlTagged=${htmlPrior.size}`
+  );
+
+  if (queue.some((item) => isBlocked(item.client.email))) {
     throw new Error('boxingcenter31 a fuité dans la file — abort');
   }
 
@@ -297,17 +354,18 @@ async function runJob({ apiKey }) {
     for (;;) {
       const i = next++;
       if (i >= queue.length) return;
-      const client = queue[i];
+      const item = queue[i];
+      const client = item.client;
       try {
         const mail = buildMail(greetingName(client.prenom, client.nom));
-        const r = await sendOne(sb, apiKey, { client, mail });
+        const r = await sendOne(sb, apiKey, { client, mail, campaign: item.campaign });
         if (r.ok) {
           state.sent += 1;
+          if (item.kind === 'prior') state.sentPrior += 1;
+          else state.sentRemaining += 1;
           consecutiveFail = 0;
-          already.add(client.email);
         } else if (r.skipped) {
           state.skipped += 1;
-          already.add(client.email);
         } else {
           state.failed += 1;
           consecutiveFail += 1;
@@ -317,7 +375,9 @@ async function runJob({ apiKey }) {
         }
         state.done = i + 1;
         if ((state.sent + state.failed) % 25 === 0 || i === queue.length - 1) {
-          log(`progress ${i + 1}/${queue.length} sent=${state.sent} failed=${state.failed}`);
+          log(
+            `progress ${i + 1}/${queue.length} sent=${state.sent} remaining=${state.sentRemaining} prior=${state.sentPrior} failed=${state.failed}`
+          );
         }
         if (i < queue.length - 1) await sleep(DELAY_MS);
       } catch (err) {
@@ -330,7 +390,9 @@ async function runJob({ apiKey }) {
   }
 
   await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
-  log(`DONE sent=${state.sent} failed=${state.failed} skipped=${state.skipped} queue=${queue.length}`);
+  log(
+    `DONE sent=${state.sent} remaining=${state.sentRemaining} prior=${state.sentPrior} failed=${state.failed} skipped=${state.skipped} queue=${queue.length}`
+  );
 }
 
 function start({ resendApiKey } = {}) {
@@ -348,8 +410,12 @@ function start({ resendApiKey } = {}) {
   state.error = null;
   state.done = 0;
   state.sent = 0;
+  state.sentRemaining = 0;
+  state.sentPrior = 0;
   state.failed = 0;
   state.skipped = 0;
+  state.queueRemaining = 0;
+  state.queuePrior = 0;
 
   setImmediate(() => {
     runJob({ apiKey })
