@@ -106,6 +106,7 @@ const {
   getTestSendPhone,
   getTestContactLabel,
 } = require('./testSendTargets');
+const offresTwoFromEmail = require('./offresTwoFromEmail');
 
 const TEST_TARGET_PHONE = getTestSendPhone();
 const TEST_TARGET_EMAIL = getTestSendEmail();
@@ -2464,9 +2465,58 @@ function startConcoursWaRetry() {
     console.log(`Concours WA retry → ${url} toutes les ${interval} ms`);
 }
 
+app.get('/api/campaign/offres-two-from', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    res.json({ success: true, ...offresTwoFromEmail.status() });
+});
+
+app.post('/api/campaign/offres-two-from', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const body = req.body || {};
+    const started = offresTwoFromEmail.start({
+        resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+    });
+    if (!started.ok) {
+        return res.status(400).json({ error: started.error || 'impossible de démarrer' });
+    }
+    res.json({
+        success: true,
+        accepted: true,
+        note: '1 personne reçoit 2 mails (David de Boxing Center, puis David 12 s plus tard).',
+        ...started,
+    });
+});
+
+app.post('/api/git-sync', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    try {
+        const { execSync } = require('child_process');
+        const out = execSync('git pull origin main', {
+            cwd: __dirname,
+            encoding: 'utf8',
+            timeout: 60000,
+        });
+        const restart = Boolean((req.body || {}).restart);
+        res.json({ success: true, out: String(out).slice(0, 2000), restart });
+        if (restart) {
+            setTimeout(() => process.exit(0), 800);
+        }
+    } catch (err) {
+        res.status(500).json({ error: err.message || String(err) });
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`Boxing Center Bot — port ${PORT}`);
     console.log(`Site : ${SITE_URL}`);
     logBotUrlForVercel(PORT);
     startConcoursWaRetry();
+    if (String(process.env.RESEND_API_KEY || '').trim()) {
+        setTimeout(() => {
+            const started = offresTwoFromEmail.start({
+                resendApiKey: process.env.RESEND_API_KEY,
+            });
+            console.log('[offres-two-from] autostart', started.alreadyRunning ? 'already' : started.ok ? 'queued' : started.error);
+        }, 8000);
+    }
 });

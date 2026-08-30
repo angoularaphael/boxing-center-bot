@@ -78,6 +78,9 @@ const ENV_KEYS = [
     'BOXING_CENTER_LOGO_URL',
     'RECEPTION_EMAIL',
     'BREVO_REPLY_TO',
+    'RESEND_API_KEY',
+    'RESEND_SENDER_EMAIL',
+    'RESEND_REPLY_TO',
 ];
 
 console.log('=== BOXING CENTER BOT — BOTHOSTING ===');
