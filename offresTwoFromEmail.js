@@ -4,7 +4,9 @@
  * 2 mails par personne (pas 2 personnes) :
  *   1) De: David de Boxing Center
  *   2) 12 s plus tard, De: David
- * Première moitié d’audience, reprise via offres_promo_from1 / from2.
+ * slice=first : première moitié (sim1).
+ * slice=second : le reste hors Balma (sim3 / 20695).
+ * Reprise via offres_promo_from1 / from2.
  */
 
 const { getSupabase } = require('./supabase');
@@ -36,10 +38,25 @@ const state = {
   sent2: 0,
   failed: 0,
   skipped: 0,
+  slice: 'first',
 };
 
 function snapshot() {
-  return { ...state, pair: '1 personne = 2 mails', from1: FROM_1, from2: FROM_2, gapMs: PAIR_GAP_MS };
+  return {
+    ...state,
+    pair: '1 personne = 2 mails',
+    from1: FROM_1,
+    from2: FROM_2,
+    gapMs: PAIR_GAP_MS,
+  };
+}
+
+function resolveSlice(raw) {
+  const v = String(raw || '')
+    .trim()
+    .toLowerCase();
+  if (v === 'second' || v === 'rest' || v === '2') return 'second';
+  return 'first';
 }
 
 function isBlocked(email) {
@@ -187,7 +204,7 @@ async function claim(sb, { campaign, email, clientId, subject, body }) {
       subject,
       body: String(body || '').slice(0, 500),
       status: 'pending',
-      bot_instance: process.env.BOT_INSTANCE_ID || 'sim1',
+      bot_instance: process.env.BOT_INSTANCE_ID || 'sim3',
     })
     .select('id')
     .single();
@@ -253,20 +270,25 @@ async function sendOne(sb, apiKey, { client, mail, campaign, fromName }) {
 }
 
 async function markStalePending(sb, campaign) {
+  const inst = String(process.env.BOT_INSTANCE_ID || '').trim();
+  if (!inst) return;
   await sb
     .from('outbound_messages')
     .update({ status: 'failed', error: 'pending coupé — relance' })
     .eq('campaign', campaign)
     .eq('channel', 'email')
-    .eq('status', 'pending');
+    .eq('status', 'pending')
+    .eq('bot_instance', inst);
 }
 
-async function runJob({ apiKey }) {
+async function runJob({ apiKey, slice }) {
   const sb = getSupabase();
   await markStalePending(sb, CAMPAIGN_1);
   await markStalePending(sb, CAMPAIGN_2);
 
-  log(`SEND start — 1 personne = 2 mails, gap=${PAIR_GAP_MS}ms concurrency=${CONCURRENCY}`);
+  log(
+    `SEND start — slice=${slice} 1 personne = 2 mails, gap=${PAIR_GAP_MS}ms concurrency=${CONCURRENCY}`
+  );
 
   const [clients, unsubscribed, already1, already2] = await Promise.all([
     fetchAllClients(sb),
@@ -294,21 +316,22 @@ async function runJob({ apiKey }) {
   }
 
   const half = Math.floor(unique.length / 2);
-  const firstHalf = unique.slice(0, half);
-  const queue = firstHalf.filter((c) => !already1.has(c.email) || !already2.has(c.email));
+  const pool = slice === 'second' ? unique.slice(half) : unique.slice(0, half);
+  const queue = pool.filter((c) => !already1.has(c.email) || !already2.has(c.email));
   const needBoth = queue.filter((c) => !already1.has(c.email) && !already2.has(c.email)).length;
   const needOnly2 = queue.filter((c) => already1.has(c.email) && !already2.has(c.email)).length;
   const needOnly1 = queue.filter((c) => !already1.has(c.email) && already2.has(c.email)).length;
 
   state.audience = unique.length;
-  state.half = half;
+  state.half = pool.length;
+  state.slice = slice;
   state.queue = queue.length;
   state.needBoth = needBoth;
   state.needOnly1 = needOnly1;
   state.needOnly2 = needOnly2;
 
   log(
-    `audience=${unique.length} half=${half} queue=${queue.length} need_both=${needBoth} need_only1=${needOnly1} need_only2=${needOnly2}`
+    `audience=${unique.length} slice=${slice} pool=${pool.length} queue=${queue.length} need_both=${needBoth} need_only1=${needOnly1} need_only2=${needOnly2}`
   );
 
   if (queue.some((c) => isBlocked(c.email))) {
@@ -398,7 +421,7 @@ async function runJob({ apiKey }) {
   log(`DONE sent1=${state.sent1} sent2=${state.sent2} failed=${state.failed} queue=${queue.length}`);
 }
 
-function start({ resendApiKey } = {}) {
+function start({ resendApiKey, slice } = {}) {
   const apiKey = String(resendApiKey || process.env.RESEND_API_KEY || '').trim();
   if (!apiKey) {
     return { ok: false, error: 'RESEND_API_KEY manquant' };
@@ -407,6 +430,7 @@ function start({ resendApiKey } = {}) {
     return { ok: true, alreadyRunning: true, ...snapshot() };
   }
 
+  const resolvedSlice = resolveSlice(slice);
   state.running = true;
   state.startedAt = new Date().toISOString();
   state.finishedAt = null;
@@ -416,9 +440,10 @@ function start({ resendApiKey } = {}) {
   state.sent2 = 0;
   state.failed = 0;
   state.skipped = 0;
+  state.slice = resolvedSlice;
 
   setImmediate(() => {
-    runJob({ apiKey })
+    runJob({ apiKey, slice: resolvedSlice })
       .catch((err) => {
         state.error = err.message || String(err);
         log(`ABORT ${state.error}`);

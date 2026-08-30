@@ -2476,6 +2476,7 @@ app.post('/api/campaign/offres-two-from', (req, res) => {
     const body = req.body || {};
     const started = offresTwoFromEmail.start({
         resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+        slice: body.slice || body.half,
     });
     if (!started.ok) {
         return res.status(400).json({ error: started.error || 'impossible de démarrer' });
@@ -2483,7 +2484,10 @@ app.post('/api/campaign/offres-two-from', (req, res) => {
     res.json({
         success: true,
         accepted: true,
-        note: '1 personne reçoit 2 mails (David de Boxing Center, puis David 12 s plus tard).',
+        note:
+            started.slice === 'second'
+                ? '2e moitié hors Balma — 1 personne reçoit 2 mails (David de Boxing Center, puis David 12 s plus tard).'
+                : '1re moitié hors Balma — 1 personne reçoit 2 mails (David de Boxing Center, puis David 12 s plus tard).',
         ...started,
     });
 });
