@@ -107,6 +107,7 @@ const {
   getTestContactLabel,
 } = require('./testSendTargets');
 const offresTwoFromEmail = require('./offresTwoFromEmail');
+const balmaDavidCampaign = require('./balmaDavidCampaign');
 
 const TEST_TARGET_PHONE = getTestSendPhone();
 const TEST_TARGET_EMAIL = getTestSendEmail();
@@ -2506,12 +2507,37 @@ app.post('/api/git-sync', (req, res) => {
     }
 });
 
+app.get('/api/campaign/balma-david', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    res.json({ success: true, ...balmaDavidCampaign.status() });
+});
+
+app.post('/api/campaign/balma-david', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const body = req.body || {};
+    const started = balmaDavidCampaign.start({
+        resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+    });
+    if (!started.ok) {
+        return res.status(400).json({ error: started.error || 'impossible de démarrer' });
+    }
+    res.json({
+        success: true,
+        accepted: true,
+        note: '1 mail David par personne Balma encore non envoyée (balma_cession_2026).',
+        ...started,
+    });
+});
+
 app.listen(PORT, () => {
     console.log(`Boxing Center Bot — port ${PORT}`);
     console.log(`Site : ${SITE_URL}`);
     logBotUrlForVercel(PORT);
     startConcoursWaRetry();
-    if (String(process.env.RESEND_API_KEY || '').trim()) {
+    const autostartOffres =
+        String(process.env.OFFRES_TWO_FROM_AUTOSTART || '').trim() === '1' ||
+        String(process.env.BOT_INSTANCE_ID || '').trim() === 'sim1';
+    if (autostartOffres && String(process.env.RESEND_API_KEY || '').trim()) {
         setTimeout(() => {
             const started = offresTwoFromEmail.start({
                 resendApiKey: process.env.RESEND_API_KEY,
