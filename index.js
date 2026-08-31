@@ -199,15 +199,8 @@ function verifyApiSecret(req, res) {
     return true;
 }
 
-function rejectIfWhatsAppDisconnected(res) {
-    if (isConnected && sock) return false;
-    res.status(503).json({
-        error:
-            'WhatsApp non connecté — ouvrez Admin → WhatsApp sur gestion-manager ' +
-            'et reconnectez le bot (QR ou code d\'appairage).',
-        connected: false,
-    });
-    return true;
+function rejectIfWhatsAppDisconnected(_res) {
+    return false;
 }
 
 function rejectWhatsAppIfDisconnected(channels, res) {
@@ -625,9 +618,6 @@ async function sendWhatsAppMessage(
     clientId = null,
     campaign = null
 ) {
-    if (!isConnected || !sock) {
-        throw new Error('WhatsApp non connecté');
-    }
     const cleanNumber = toWhatsAppDigits(phone);
     if (!isValidPhoneDigits(cleanNumber)) {
         throw new Error(`Numéro invalide : ${phone}`);
@@ -644,32 +634,22 @@ async function sendWhatsAppMessage(
         client_id: clientId || null,
         campaign: campaign || null,
         bot_instance: BOT_INSTANCE_ID,
-        channel: 'whatsapp',
+        channel: 'sms',
         recipient: cleanNumber,
         subject: null,
         body: fullMessage,
         status: 'pending',
     });
     try {
-        const jid = `${cleanNumber}@s.whatsapp.net`;
-        const logo = await getMenuLogoBuffer();
-        let waMessageId = null;
-        if (logo && fullMessage.length <= WA_CAPTION_MAX) {
-            const sent = await sock.sendMessage(jid, { image: logo, caption: fullMessage });
-            waMessageId = sent?.key?.id || null;
-        } else if (fullMessage.length <= WA_MAX_LEN) {
-            const sent = await sock.sendMessage(jid, { text: fullMessage });
-            waMessageId = sent?.key?.id || null;
-        } else {
-            await sendLongMessage(jid, fullMessage);
-        }
+        const { sendSmsGatewayMessage } = require('./lib/smsGateway');
+        const sent = await sendSmsGatewayMessage(cleanNumber, fullMessage, { source: BOT_INSTANCE_ID || 'boxing-center-bot' });
         await updateOutboundMessage(record.id, {
             status: 'sent',
             sent_at: new Date().toISOString(),
-            wa_message_id: waMessageId,
+            wa_message_id: sent.recipientId || null,
         });
-        console.log(`[BOT] WhatsApp envoyé → +${cleanNumber}${campaign ? ` (${campaign})` : ''}`);
-        return { success: true, id: record.id, phone: cleanNumber, waMessageId };
+        console.log(`[BOT] SMS envoyé → +${cleanNumber}${campaign ? ` (${campaign})` : ''}`);
+        return { success: true, id: record.id, phone: cleanNumber, via: 'sms', recipientId: sent.recipientId };
     } catch (err) {
         await updateOutboundMessage(record.id, {
             status: 'failed',
