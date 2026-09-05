@@ -108,6 +108,7 @@ const {
 } = require('./testSendTargets');
 const offresTwoFromEmail = require('./offresTwoFromEmail');
 const balmaDavidCampaign = require('./balmaDavidCampaign');
+const enfantsCampaign = require('./enfantsCampaign');
 
 const TEST_TARGET_PHONE = getTestSendPhone();
 const TEST_TARGET_EMAIL = getTestSendEmail();
@@ -2509,6 +2510,28 @@ app.post('/api/campaign/balma-david', (req, res) => {
         success: true,
         accepted: true,
         note: '1 mail David : restants + ceux qui avaient déjà eu l’info HTML (balma_david_plain).',
+        ...started,
+    });
+});
+
+app.get('/api/campaign/enfants-email', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    res.json({ success: true, ...enfantsCampaign.status() });
+});
+
+app.post('/api/campaign/enfants-email', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const body = req.body || {};
+    const started = enfantsCampaign.start({
+        resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+    });
+    if (!started.ok) {
+        return res.status(400).json({ error: started.error || 'impossible de démarrer' });
+    }
+    res.json({
+        success: true,
+        accepted: true,
+        note: 'Campagne enfants — 2 BD, mail David de Boxing Center (texte brut).',
         ...started,
     });
 });
