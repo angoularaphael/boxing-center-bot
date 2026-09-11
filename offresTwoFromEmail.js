@@ -67,6 +67,8 @@ function snapshot() {
     pair: '1 personne = 2 mails',
     from1: FROM_1,
     from2: FROM_2,
+    campaign1: jobConfig.campaign1,
+    campaign2: jobConfig.campaign2,
     gapMs: PAIR_GAP_MS,
     delayMs: DELAY_MS,
     concurrency: CONCURRENCY,
@@ -74,12 +76,33 @@ function snapshot() {
   };
 }
 
+let jobConfig = {
+  campaign1: CAMPAIGN_1,
+  campaign2: CAMPAIGN_2,
+  recipients: null,
+  skipBalma: false,
+};
+
 function resolveSlice(raw) {
   const v = String(raw || '')
     .trim()
     .toLowerCase();
+  if (v === 'all' || v === 'given' || v === '*') return 'all';
   if (v === 'second' || v === 'rest' || v === '2') return 'second';
   return 'first';
+}
+
+function normalizeRecipients(raw) {
+  if (!Array.isArray(raw) || !raw.length) return null;
+  return raw
+    .map((row) => ({
+      email: String(row.email || '')
+        .trim()
+        .toLowerCase(),
+      prenom: String(row.prenom || row.name || '').trim(),
+      nom: String(row.nom || '').trim(),
+    }))
+    .filter((row) => row.email.includes('@'));
 }
 
 function isBlocked(email) {
@@ -307,22 +330,28 @@ async function markStalePending(sb, campaign) {
 }
 
 async function runJob({ apiKey, slice }) {
+  const campaign1 = jobConfig.campaign1;
+  const campaign2 = jobConfig.campaign2;
   const sb = getSupabase();
-  await markStalePending(sb, CAMPAIGN_1);
-  await markStalePending(sb, CAMPAIGN_2);
+  await markStalePending(sb, campaign1);
+  await markStalePending(sb, campaign2);
 
   log(
-    `SEND start — slice=${slice} 1 personne = 2 mails, gap=${PAIR_GAP_MS}ms concurrency=${CONCURRENCY}`
+    `SEND start — slice=${slice} campaign=${campaign1} 1 personne = 2 mails, gap=${PAIR_GAP_MS}ms concurrency=${CONCURRENCY}`
   );
 
+  const clientsPromise = jobConfig.recipients
+    ? Promise.resolve(jobConfig.recipients)
+    : fetchAllClients(sb);
+
   const [clients, unsubscribed, already1, already2] = await Promise.all([
-    fetchAllClients(sb),
+    clientsPromise,
     fetchSet(sb, 'email_unsubscribes', 'email'),
     fetchSet(sb, 'outbound_messages', 'recipient', (q) =>
-      q.eq('campaign', CAMPAIGN_1).eq('channel', 'email').in('status', ['sent', 'pending'])
+      q.eq('campaign', campaign1).eq('channel', 'email').in('status', ['sent', 'pending'])
     ),
     fetchSet(sb, 'outbound_messages', 'recipient', (q) =>
-      q.eq('campaign', CAMPAIGN_2).eq('channel', 'email').in('status', ['sent', 'pending'])
+      q.eq('campaign', campaign2).eq('channel', 'email').in('status', ['sent', 'pending'])
     ),
   ]);
 
@@ -334,14 +363,15 @@ async function runJob({ apiKey, slice }) {
       .toLowerCase();
     if (!email || seen.has(email)) continue;
     if (isBlocked(email)) continue;
-    if (isBalma(client.salle)) continue;
+    if (!jobConfig.skipBalma && isBalma(client.salle)) continue;
     if (unsubscribed.has(email)) continue;
     seen.add(email);
     unique.push({ ...client, email });
   }
 
   const half = Math.floor(unique.length / 2);
-  const pool = slice === 'second' ? unique.slice(half) : unique.slice(0, half);
+  const pool =
+    slice === 'all' ? unique : slice === 'second' ? unique.slice(half) : unique.slice(0, half);
   const queue = pool.filter((c) => !already1.has(c.email) || !already2.has(c.email));
   const needBoth = queue.filter((c) => !already1.has(c.email) && !already2.has(c.email)).length;
   const needOnly2 = queue.filter((c) => already1.has(c.email) && !already2.has(c.email)).length;
@@ -385,7 +415,7 @@ async function runJob({ apiKey, slice }) {
           const r1 = await sendOne(sb, apiKey, {
             client,
             mail,
-            campaign: CAMPAIGN_1,
+            campaign: campaign1,
             fromName: FROM_1,
           });
           if (r1.ok) {
@@ -410,7 +440,7 @@ async function runJob({ apiKey, slice }) {
           const r2 = await sendOne(sb, apiKey, {
             client,
             mail,
-            campaign: CAMPAIGN_2,
+            campaign: campaign2,
             fromName: FROM_2,
           });
           if (r2.ok) {
@@ -446,7 +476,7 @@ async function runJob({ apiKey, slice }) {
   log(`DONE sent1=${state.sent1} sent2=${state.sent2} failed=${state.failed} queue=${queue.length}`);
 }
 
-function start({ resendApiKey, slice } = {}) {
+function start({ resendApiKey, slice, recipients, campaign1, campaign2, skipBalma } = {}) {
   const apiKey = String(resendApiKey || process.env.RESEND_API_KEY || '').trim();
   if (!apiKey) {
     return { ok: false, error: 'RESEND_API_KEY manquant' };
@@ -454,6 +484,13 @@ function start({ resendApiKey, slice } = {}) {
   if (state.running) {
     return { ok: true, alreadyRunning: true, ...snapshot() };
   }
+
+  jobConfig = {
+    campaign1: String(campaign1 || CAMPAIGN_1).trim() || CAMPAIGN_1,
+    campaign2: String(campaign2 || CAMPAIGN_2).trim() || CAMPAIGN_2,
+    recipients: normalizeRecipients(recipients),
+    skipBalma: Boolean(skipBalma) || Boolean(normalizeRecipients(recipients)),
+  };
 
   const resolvedSlice = resolveSlice(slice);
   state.running = true;

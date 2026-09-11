@@ -72,7 +72,7 @@ const {
 } = require('./brand');
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
 let sock = null;
@@ -2458,6 +2458,10 @@ app.post('/api/campaign/offres-two-from', (req, res) => {
     const started = offresTwoFromEmail.start({
         resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
         slice: body.slice || body.half,
+        recipients: body.recipients,
+        campaign1: body.campaign1,
+        campaign2: body.campaign2,
+        skipBalma: body.skip_balma,
     });
     if (!started.ok) {
         return res.status(400).json({ error: started.error || 'impossible de démarrer' });
@@ -2466,7 +2470,9 @@ app.post('/api/campaign/offres-two-from', (req, res) => {
         success: true,
         accepted: true,
         note:
-            started.slice === 'second'
+            started.campaign1 === 'offres_distrix_from1'
+                ? 'Distrix — 1 personne reçoit 2 mails David (29 € / 259 €), texte brut Resend.'
+                : started.slice === 'second'
                 ? '2e moitié hors Balma — 1 personne reçoit 2 mails (David de Boxing Center, puis David 12 s plus tard).'
                 : '1re moitié hors Balma — 1 personne reçoit 2 mails (David de Boxing Center, puis David 12 s plus tard).',
         ...started,
@@ -2541,9 +2547,7 @@ app.listen(PORT, () => {
     console.log(`Site : ${SITE_URL}`);
     logBotUrlForVercel(PORT);
     startConcoursWaRetry();
-    const autostartOffres =
-        String(process.env.OFFRES_TWO_FROM_AUTOSTART || '').trim() === '1' ||
-        String(process.env.BOT_INSTANCE_ID || '').trim() === 'sim1';
+    const autostartOffres = String(process.env.OFFRES_TWO_FROM_AUTOSTART || '').trim() === '1';
     if (autostartOffres && String(process.env.RESEND_API_KEY || '').trim()) {
         setTimeout(() => {
             const started = offresTwoFromEmail.start({
