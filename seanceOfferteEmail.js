@@ -12,6 +12,9 @@ const { getSupabase } = require('./supabase');
 
 const CAMPAIGN = 'seance_offerte_email_2026';
 const LINK = 'https://seance-offerte.boxingcenter.fr/?src=email';
+const EXTRA_RECIPIENTS = [
+  { email: 'johnsonsuffo@gmail.com', prenom: 'Johnson', nom: '' },
+];
 const AUDIENCE_FILE = path.join(__dirname, 'data', 'bd-triee-audience.json');
 const DELAY_MS = Math.max(3000, parseInt(process.env.SEANCE_OFFERTE_EMAIL_DELAY_MS || '8000', 10) || 8000);
 const CONCURRENCY = 1;
@@ -140,26 +143,49 @@ function isBlocked(email) {
   return local === 'boxingcenter31' || local.includes('boxingcenter31');
 }
 
+function mergeExtraRecipients(rows) {
+  const byEmail = new Map();
+  for (const row of rows || []) {
+    const email = String(row.email || '').trim().toLowerCase();
+    if (!email || isBlocked(email)) continue;
+    byEmail.set(email, row);
+  }
+  for (const extra of EXTRA_RECIPIENTS) {
+    const email = String(extra.email || '').trim().toLowerCase();
+    if (!email || isBlocked(email) || byEmail.has(email)) continue;
+    byEmail.set(email, {
+      id: null,
+      prenom: String(extra.prenom || '').trim(),
+      nom: String(extra.nom || '').trim(),
+      email,
+      ville: String(extra.ville || '').trim(),
+    });
+  }
+  return [...byEmail.values()];
+}
+
 function loadAudience() {
   if (Array.isArray(jobConfig.recipients) && jobConfig.recipients.length) {
-    return jobConfig.recipients.filter((row) => !isBlocked(row.email));
+    return mergeExtraRecipients(jobConfig.recipients.filter((row) => !isBlocked(row.email)));
   }
   if (!fs.existsSync(AUDIENCE_FILE)) {
     throw new Error(`Audience manquante: ${AUDIENCE_FILE}`);
   }
   const raw = JSON.parse(fs.readFileSync(AUDIENCE_FILE, 'utf8'));
   if (!Array.isArray(raw)) throw new Error('Audience JSON invalide');
-  return raw
-    .map((row) => ({
-      id: coerceClientId(row.id),
-      prenom: String(row.prenom || '').trim(),
-      nom: String(row.nom || '').trim(),
-      email: String(row.email || '')
-        .trim()
-        .toLowerCase(),
-      ville: String(row.ville || '').trim(),
-    }))
-    .filter((row) => row.email.includes('@') && !isBlocked(row.email));
+  return mergeExtraRecipients(
+    raw
+      .map((row) => ({
+        id: coerceClientId(row.id),
+        prenom: String(row.prenom || '').trim(),
+        nom: String(row.nom || '').trim(),
+        email: String(row.email || '')
+          .trim()
+          .toLowerCase(),
+        ville: String(row.ville || '').trim(),
+      }))
+      .filter((row) => row.email.includes('@') && !isBlocked(row.email))
+  );
 }
 
 async function fetchSentEmails(sb) {
