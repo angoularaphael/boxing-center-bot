@@ -2548,6 +2548,11 @@ app.get('/api/campaign/seance-offerte-email', (req, res) => {
     res.json({ success: true, ...seanceOfferteEmail.status() });
 });
 
+app.delete('/api/campaign/seance-offerte-email', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    res.json({ success: true, ...seanceOfferteEmail.stop() });
+});
+
 app.post('/api/campaign/seance-offerte-email', (req, res) => {
     if (!verifyApiSecret(req, res)) return;
     const body = req.body || {};
@@ -2556,6 +2561,7 @@ app.post('/api/campaign/seance-offerte-email', (req, res) => {
         gmailPass: body.gmail_pass || process.env.CAMPAIGN_GMAIL_PASS,
         recipients: body.recipients,
         waveSize: body.wave_size,
+        force: Boolean(body.force),
     });
     if (!started.ok) {
         return res.status(400).json({ error: started.error || 'impossible de démarrer' });

@@ -27,6 +27,8 @@ const DELAY_MS = Math.max(3000, parseInt(process.env.SEANCE_OFFERTE_EMAIL_DELAY_
 const WAVE_SIZE = Math.max(50, parseInt(process.env.SEANCE_OFFERTE_WAVE_SIZE || '500', 10) || 500);
 const CONCURRENCY = 1;
 
+let cancelRequested = false;
+
 const state = {
   running: false,
   startedAt: null,
@@ -350,6 +352,7 @@ async function runJob({ gmailUser, gmailPass }) {
     for (;;) {
       const i = idx++;
       if (i >= queue.length) return;
+      if (cancelRequested) return;
       const client = queue[i];
       try {
         const result = await sendOne(sb, transport, user, client);
@@ -377,12 +380,22 @@ async function runJob({ gmailUser, gmailPass }) {
   );
 }
 
-function start({ gmailUser, gmailPass, recipients, waveSize } = {}) {
+function stop() {
+  cancelRequested = true;
+  state.running = false;
+  return { ok: true, stopped: true, ...snapshot() };
+}
+
+function start({ gmailUser, gmailPass, recipients, waveSize, force } = {}) {
   const user = String(gmailUser || process.env.CAMPAIGN_GMAIL_USER || '').trim();
   const pass = String(gmailPass || process.env.CAMPAIGN_GMAIL_PASS || '')
     .replace(/\s+/g, '');
   if (!user || !pass) return { ok: false, error: 'CAMPAIGN_GMAIL_USER / CAMPAIGN_GMAIL_PASS manquants' };
-  if (state.running) return { ok: true, alreadyRunning: true, ...snapshot() };
+  if (state.running) {
+    if (force) stop();
+    else return { ok: true, alreadyRunning: true, ...snapshot() };
+  }
+  cancelRequested = false;
 
   jobConfig = {
     recipients:
@@ -418,4 +431,4 @@ function start({ gmailUser, gmailPass, recipients, waveSize } = {}) {
   return { ok: true, accepted: true, ...snapshot() };
 }
 
-module.exports = { start, status: snapshot, CAMPAIGN, LINK };
+module.exports = { start, stop, status: snapshot, CAMPAIGN, LINK };
