@@ -2557,8 +2557,7 @@ app.post('/api/campaign/seance-offerte-email', (req, res) => {
     if (!verifyApiSecret(req, res)) return;
     const body = req.body || {};
     const started = seanceOfferteEmail.start({
-        gmailUser: body.gmail_user || process.env.CAMPAIGN_GMAIL_USER,
-        gmailPass: body.gmail_pass || process.env.CAMPAIGN_GMAIL_PASS,
+        resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
         recipients: body.recipients,
         waveSize: body.wave_size,
         force: Boolean(body.force),
@@ -2569,7 +2568,7 @@ app.post('/api/campaign/seance-offerte-email', (req, res) => {
     res.json({
         success: true,
         accepted: true,
-        note: 'Séance offerte — texte David via Gmail, lien ?src=email, suivi outbound_messages.',
+        note: 'Séance offerte — texte David via Resend/no-reply, lien ?src=email, suivi outbound_messages.',
         ...started,
     });
 });

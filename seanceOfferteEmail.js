@@ -1,17 +1,19 @@
 'use strict';
 
 /**
- * Campagne séance offerte — texte David (Gmail SMTP, comme les tests inbox).
+ * Campagne séance offerte — texte David via Resend.
  * Suivi : outbound_messages (campaign) + lien ?src=email sur seance-offerte.
  */
 
 const fs = require('fs');
 const path = require('path');
-const nodemailer = require('nodemailer');
 const { getSupabase } = require('./supabase');
 
 const CAMPAIGN = 'seance_offerte_email_2026';
 const LINK = 'https://seance-offerte.boxingcenter.fr/?src=email';
+const FROM_EMAIL = process.env.RESEND_SENDER_EMAIL || 'no-reply@boxingcenter.fr';
+const REPLY_TO = process.env.RESEND_REPLY_TO || 'comptaboxing@gmail.com';
+const UNSUBSCRIBE_EMAIL = process.env.RESEND_UNSUBSCRIBE_EMAIL || REPLY_TO;
 const EXTRA_RECIPIENTS = [
   { email: 'johnsonsuffo@gmail.com', prenom: 'Johnson', nom: '' },
 ];
@@ -43,13 +45,12 @@ const state = {
   sent: 0,
   failed: 0,
   skipped: 0,
-  via: 'gmail',
+  via: 'resend',
 };
 
 let jobConfig = {
   recipients: null,
-  gmailUser: '',
-  gmailPass: '',
+  resendApiKey: '',
 };
 
 function snapshot() {
@@ -218,7 +219,7 @@ async function fetchSentEmails(sb) {
       .select('recipient')
       .eq('campaign', CAMPAIGN)
       .eq('channel', 'email')
-      .in('status', ['sent', 'pending'])
+      .eq('status', 'sent')
       .range(from, from + pageSize - 1);
     if (error) throw error;
     if (!data?.length) break;
@@ -234,31 +235,31 @@ async function fetchSentEmails(sb) {
   return out;
 }
 
-function createTransport({ gmailUser, gmailPass }) {
-  const user = String(gmailUser || process.env.CAMPAIGN_GMAIL_USER || '').trim();
-  const pass = String(gmailPass || process.env.CAMPAIGN_GMAIL_PASS || '')
-    .replace(/\s+/g, '');
-  if (!user || !pass) throw new Error('CAMPAIGN_GMAIL_USER / CAMPAIGN_GMAIL_PASS manquants');
-  return {
-    user,
-    transport: nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 587,
-      secure: false,
-      auth: { user, pass },
+async function sendResend({ apiKey, to, subject, text }) {
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: `David <${FROM_EMAIL}>`,
+      to: [to],
+      subject,
+      text,
+      reply_to: REPLY_TO,
+      headers: {
+        'List-Unsubscribe': `<mailto:${UNSUBSCRIBE_EMAIL}?subject=Desinscription>`,
+      },
     }),
-  };
-}
-
-async function sendGmail({ transport, user, to, subject, text }) {
-  const info = await transport.sendMail({
-    from: `David <${user}>`,
-    to,
-    replyTo: user,
-    subject,
-    text,
   });
-  return info.messageId;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.message || data.name || `Resend HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return data.id;
 }
 
 async function claim(sb, { email, clientId, subject, body }) {
@@ -277,7 +278,22 @@ async function claim(sb, { email, clientId, subject, body }) {
     .select('id')
     .single();
   if (error) {
-    if (error.code === '23505' || /duplicate|unique/i.test(error.message || '')) return null;
+    if (error.code === '23505' || /duplicate|unique/i.test(error.message || '')) {
+      const { data: existing, error: existingError } = await sb
+        .from('outbound_messages')
+        .select('id,status')
+        .eq('campaign', CAMPAIGN)
+        .eq('channel', 'email')
+        .eq('recipient', email)
+        .maybeSingle();
+      if (existingError) throw existingError;
+      if (!existing || existing.status === 'sent') return null;
+      await sb
+        .from('outbound_messages')
+        .update({ status: 'pending', error: null })
+        .eq('id', existing.id);
+      return existing;
+    }
     throw error;
   }
   return data;
@@ -292,7 +308,7 @@ async function mark(sb, id, status, errorMessage) {
   await sb.from('outbound_messages').update(patch).eq('id', id);
 }
 
-async function sendOne(sb, transport, gmailUser, client) {
+async function sendOne(sb, apiKey, client) {
   const mail = buildMail(client.prenom, client.nom, client.email);
   const row = await claim(sb, {
     email: client.email,
@@ -305,9 +321,8 @@ async function sendOne(sb, transport, gmailUser, client) {
   let lastErr = '';
   for (let attempt = 1; attempt <= 4; attempt++) {
     try {
-      await sendGmail({
-        transport,
-        user: gmailUser,
+      await sendResend({
+        apiKey,
         to: client.email,
         subject: mail.subject,
         text: mail.text,
@@ -316,8 +331,11 @@ async function sendOne(sb, transport, gmailUser, client) {
       return { ok: true, skipped: false };
     } catch (err) {
       lastErr = err.message || String(err);
-      if (/rate|limit|too many|421|450|daily|quota|ECONNRESET|ETIMEDOUT|ENOTFOUND|network|socket/i.test(lastErr)) {
-        const wait = 60000 * attempt;
+      if (
+        err.status === 429 ||
+        /rate|limit|too many|ECONNRESET|ETIMEDOUT|ENOTFOUND|network|socket|fetch failed/i.test(lastErr)
+      ) {
+        const wait = 20000 * attempt + Math.floor(Math.random() * 8000);
         log(`RETRY ${client.email} wait ${wait}ms (${lastErr})`);
         await sleep(wait);
         continue;
@@ -330,9 +348,10 @@ async function sendOne(sb, transport, gmailUser, client) {
   return { ok: false, skipped: false, error: lastErr };
 }
 
-async function runJob({ gmailUser, gmailPass }) {
+async function runJob({ resendApiKey }) {
   const sb = getSupabase();
-  const { user, transport } = createTransport({ gmailUser, gmailPass });
+  const apiKey = String(resendApiKey || process.env.RESEND_API_KEY || '').trim();
+  if (!apiKey) throw new Error('RESEND_API_KEY manquant');
   const audience = loadAudience();
   const sent = await fetchSentEmails(sb);
   const pending = audience.filter((c) => !sent.has(c.email));
@@ -344,7 +363,7 @@ async function runJob({ gmailUser, gmailPass }) {
   state.waveSize = waveLimit;
   state.remaining = Math.max(0, pending.length - queue.length);
   log(
-    `START audience=${audience.length} pending=${pending.length} wave=${queue.length} reste=${state.remaining} from=${user.replace(/.(?=.{4}@)/g, '*')}`
+    `START audience=${audience.length} pending=${pending.length} wave=${queue.length} reste=${state.remaining} from=${FROM_EMAIL}`
   );
 
   let idx = 0;
@@ -355,7 +374,7 @@ async function runJob({ gmailUser, gmailPass }) {
       if (cancelRequested) return;
       const client = queue[i];
       try {
-        const result = await sendOne(sb, transport, user, client);
+        const result = await sendOne(sb, apiKey, client);
         state.done++;
         if (result.skipped) state.skipped++;
         else if (result.ok) state.sent++;
@@ -386,11 +405,9 @@ function stop() {
   return { ok: true, stopped: true, ...snapshot() };
 }
 
-function start({ gmailUser, gmailPass, recipients, waveSize, force } = {}) {
-  const user = String(gmailUser || process.env.CAMPAIGN_GMAIL_USER || '').trim();
-  const pass = String(gmailPass || process.env.CAMPAIGN_GMAIL_PASS || '')
-    .replace(/\s+/g, '');
-  if (!user || !pass) return { ok: false, error: 'CAMPAIGN_GMAIL_USER / CAMPAIGN_GMAIL_PASS manquants' };
+function start({ resendApiKey, recipients, waveSize, force } = {}) {
+  const apiKey = String(resendApiKey || process.env.RESEND_API_KEY || '').trim();
+  if (!apiKey) return { ok: false, error: 'RESEND_API_KEY manquant' };
   if (state.running) {
     if (force) stop();
     else return { ok: true, alreadyRunning: true, ...snapshot() };
@@ -400,8 +417,7 @@ function start({ gmailUser, gmailPass, recipients, waveSize, force } = {}) {
   jobConfig = {
     recipients:
       Array.isArray(recipients) && recipients.length <= 50 ? normalizeRecipients(recipients) : null,
-    gmailUser: user,
-    gmailPass: pass,
+    resendApiKey: apiKey,
     waveSize: Math.max(50, parseInt(waveSize || process.env.SEANCE_OFFERTE_WAVE_SIZE || WAVE_SIZE, 10) || WAVE_SIZE),
   };
 
@@ -417,7 +433,7 @@ function start({ gmailUser, gmailPass, recipients, waveSize, force } = {}) {
   state.queue = 0;
 
   setImmediate(() => {
-    runJob({ gmailUser: user, gmailPass: pass })
+    runJob({ resendApiKey: apiKey })
       .catch((err) => {
         state.error = err.message || String(err);
         log(`ABORT ${state.error}`);
@@ -431,4 +447,11 @@ function start({ gmailUser, gmailPass, recipients, waveSize, force } = {}) {
   return { ok: true, accepted: true, ...snapshot() };
 }
 
-module.exports = { start, stop, status: snapshot, CAMPAIGN, LINK };
+module.exports = {
+  start,
+  stop,
+  status: snapshot,
+  CAMPAIGN,
+  LINK,
+  _test: { buildMail, sendResend, FROM_EMAIL, REPLY_TO },
+};
