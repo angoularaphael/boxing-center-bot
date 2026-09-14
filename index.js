@@ -2555,6 +2555,7 @@ app.post('/api/campaign/seance-offerte-email', (req, res) => {
         gmailUser: body.gmail_user || process.env.CAMPAIGN_GMAIL_USER,
         gmailPass: body.gmail_pass || process.env.CAMPAIGN_GMAIL_PASS,
         recipients: body.recipients,
+        waveSize: body.wave_size,
     });
     if (!started.ok) {
         return res.status(400).json({ error: started.error || 'impossible de démarrer' });

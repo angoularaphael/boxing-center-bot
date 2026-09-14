@@ -15,8 +15,16 @@ const LINK = 'https://seance-offerte.boxingcenter.fr/?src=email';
 const EXTRA_RECIPIENTS = [
   { email: 'johnsonsuffo@gmail.com', prenom: 'Johnson', nom: '' },
 ];
-const AUDIENCE_FILE = path.join(__dirname, 'data', 'bd-triee-audience.json');
+function audienceFilePath() {
+  const bot = String(process.env.BOT_INSTANCE_ID || 'sim1').trim();
+  const byBot = path.join(__dirname, 'data', `seance-offerte-${bot}.json`);
+  if (fs.existsSync(byBot)) return byBot;
+  const legacy = path.join(__dirname, 'data', 'bd-triee-audience.json');
+  if (fs.existsSync(legacy)) return legacy;
+  return byBot;
+}
 const DELAY_MS = Math.max(3000, parseInt(process.env.SEANCE_OFFERTE_EMAIL_DELAY_MS || '8000', 10) || 8000);
+const WAVE_SIZE = Math.max(50, parseInt(process.env.SEANCE_OFFERTE_WAVE_SIZE || '500', 10) || 500);
 const CONCURRENCY = 1;
 
 const state = {
@@ -26,6 +34,9 @@ const state = {
   error: null,
   audience: 0,
   queue: 0,
+  waveSize: WAVE_SIZE,
+  waveDone: 0,
+  remaining: 0,
   done: 0,
   sent: 0,
   failed: 0,
@@ -40,7 +51,13 @@ let jobConfig = {
 };
 
 function snapshot() {
-  return { ...state, campaign: CAMPAIGN, delayMs: DELAY_MS, link: LINK };
+  return {
+    ...state,
+    campaign: CAMPAIGN,
+    delayMs: DELAY_MS,
+    waveLimit: WAVE_SIZE,
+    link: LINK,
+  };
 }
 
 function sleep(ms) {
@@ -165,13 +182,14 @@ function mergeExtraRecipients(rows) {
 }
 
 function loadAudience() {
-  if (Array.isArray(jobConfig.recipients) && jobConfig.recipients.length) {
+  if (Array.isArray(jobConfig.recipients) && jobConfig.recipients.length <= 50) {
     return mergeExtraRecipients(jobConfig.recipients.filter((row) => !isBlocked(row.email)));
   }
-  if (!fs.existsSync(AUDIENCE_FILE)) {
-    throw new Error(`Audience manquante: ${AUDIENCE_FILE}`);
+  const audienceFile = audienceFilePath();
+  if (!fs.existsSync(audienceFile)) {
+    throw new Error(`Audience manquante: ${audienceFile} (git pull + build-seance-offerte-audience.js)`);
   }
-  const raw = JSON.parse(fs.readFileSync(AUDIENCE_FILE, 'utf8'));
+  const raw = JSON.parse(fs.readFileSync(audienceFile, 'utf8'));
   if (!Array.isArray(raw)) throw new Error('Audience JSON invalide');
   return mergeExtraRecipients(
     raw
@@ -315,11 +333,17 @@ async function runJob({ gmailUser, gmailPass }) {
   const { user, transport } = createTransport({ gmailUser, gmailPass });
   const audience = loadAudience();
   const sent = await fetchSentEmails(sb);
-  const queue = audience.filter((c) => !sent.has(c.email));
+  const pending = audience.filter((c) => !sent.has(c.email));
+  const waveLimit = Math.max(1, Number(jobConfig.waveSize) || WAVE_SIZE);
+  const queue = pending.slice(0, waveLimit);
 
   state.audience = audience.length;
-  state.queue = queue.length;
-  log(`START audience=${audience.length} pending=${queue.length} from=${user.replace(/.(?=.{4}@)/g, '*')}`);
+  state.queue = pending.length;
+  state.waveSize = waveLimit;
+  state.remaining = Math.max(0, pending.length - queue.length);
+  log(
+    `START audience=${audience.length} pending=${pending.length} wave=${queue.length} reste=${state.remaining} from=${user.replace(/.(?=.{4}@)/g, '*')}`
+  );
 
   let idx = 0;
   async function worker() {
@@ -333,8 +357,9 @@ async function runJob({ gmailUser, gmailPass }) {
         if (result.skipped) state.skipped++;
         else if (result.ok) state.sent++;
         else state.failed++;
+        state.waveDone = state.done;
         if (state.done % 25 === 0) {
-          log(`PROGRESS ${state.done}/${queue.length} sent=${state.sent} failed=${state.failed}`);
+          log(`PROGRESS vague ${state.done}/${queue.length} sent=${state.sent} failed=${state.failed}`);
         }
         if (i < queue.length - 1) await sleep(DELAY_MS);
       } catch (err) {
@@ -347,10 +372,12 @@ async function runJob({ gmailUser, gmailPass }) {
   }
 
   await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
-  log(`DONE sent=${state.sent} failed=${state.failed} skipped=${state.skipped} queue=${queue.length}`);
+  log(
+    `WAVE_DONE sent=${state.sent} failed=${state.failed} skipped=${state.skipped} wave=${queue.length} reste=${state.remaining}`
+  );
 }
 
-function start({ gmailUser, gmailPass, recipients } = {}) {
+function start({ gmailUser, gmailPass, recipients, waveSize } = {}) {
   const user = String(gmailUser || process.env.CAMPAIGN_GMAIL_USER || '').trim();
   const pass = String(gmailPass || process.env.CAMPAIGN_GMAIL_PASS || '')
     .replace(/\s+/g, '');
@@ -358,9 +385,11 @@ function start({ gmailUser, gmailPass, recipients } = {}) {
   if (state.running) return { ok: true, alreadyRunning: true, ...snapshot() };
 
   jobConfig = {
-    recipients: normalizeRecipients(recipients),
+    recipients:
+      Array.isArray(recipients) && recipients.length <= 50 ? normalizeRecipients(recipients) : null,
     gmailUser: user,
     gmailPass: pass,
+    waveSize: Math.max(50, parseInt(waveSize || process.env.SEANCE_OFFERTE_WAVE_SIZE || WAVE_SIZE, 10) || WAVE_SIZE),
   };
 
   state.running = true;
