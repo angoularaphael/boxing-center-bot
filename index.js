@@ -109,6 +109,7 @@ const {
 const offresTwoFromEmail = require('./offresTwoFromEmail');
 const balmaDavidCampaign = require('./balmaDavidCampaign');
 const enfantsCampaign = require('./enfantsCampaign');
+const seanceOfferteEmail = require('./seanceOfferteEmail');
 
 const TEST_TARGET_PHONE = getTestSendPhone();
 const TEST_TARGET_EMAIL = getTestSendEmail();
@@ -2538,6 +2539,30 @@ app.post('/api/campaign/enfants-email', (req, res) => {
         success: true,
         accepted: true,
         note: 'Campagne enfants — 2 BD, mail David de Boxing Center (texte brut).',
+        ...started,
+    });
+});
+
+app.get('/api/campaign/seance-offerte-email', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    res.json({ success: true, ...seanceOfferteEmail.status() });
+});
+
+app.post('/api/campaign/seance-offerte-email', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const body = req.body || {};
+    const started = seanceOfferteEmail.start({
+        gmailUser: body.gmail_user || process.env.CAMPAIGN_GMAIL_USER,
+        gmailPass: body.gmail_pass || process.env.CAMPAIGN_GMAIL_PASS,
+        recipients: body.recipients,
+    });
+    if (!started.ok) {
+        return res.status(400).json({ error: started.error || 'impossible de démarrer' });
+    }
+    res.json({
+        success: true,
+        accepted: true,
+        note: 'Séance offerte — texte David via Gmail, lien ?src=email, suivi outbound_messages.',
         ...started,
     });
 });
