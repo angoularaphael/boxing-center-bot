@@ -112,7 +112,7 @@ function normalizeRecipients(raw) {
   if (!Array.isArray(raw) || !raw.length) return null;
   return raw
     .map((row) => ({
-      id: String(row.id || row.email || '').trim(),
+      id: coerceClientId(row.id),
       prenom: String(row.prenom || row.name || '').trim(),
       nom: String(row.nom || '').trim(),
       email: String(row.email || '')
@@ -121,6 +121,13 @@ function normalizeRecipients(raw) {
       ville: String(row.ville || '').trim(),
     }))
     .filter((row) => row.email.includes('@'));
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function coerceClientId(value) {
+  const id = String(value || '').trim();
+  return UUID_RE.test(id) ? id : null;
 }
 
 function isBlocked(email) {
@@ -144,7 +151,7 @@ function loadAudience() {
   if (!Array.isArray(raw)) throw new Error('Audience JSON invalide');
   return raw
     .map((row) => ({
-      id: String(row.id || row.email || '').trim(),
+      id: coerceClientId(row.id),
       prenom: String(row.prenom || '').trim(),
       nom: String(row.nom || '').trim(),
       email: String(row.email || '')
@@ -215,7 +222,7 @@ async function claim(sb, { email, clientId, subject, body }) {
       campaign: CAMPAIGN,
       channel: 'email',
       recipient: email,
-      client_id: clientId || null,
+      client_id: coerceClientId(clientId),
       subject,
       body: String(body || '').slice(0, 500),
       status: 'pending',
