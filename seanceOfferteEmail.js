@@ -2,7 +2,9 @@
 
 /**
  * Campagne séance offerte — texte David via Resend.
- * Suivi : outbound_messages (campaign) + lien ?src=email sur seance-offerte.
+ * Objectif : onglet Principal. À défaut Promotions, pas Spam.
+ * Texte brut perso + List-Unsubscribe. Pas de HTML ni Precedence:bulk.
+ * Suivi : outbound_messages + lien ?src=email.
  */
 
 const fs = require('fs');
@@ -118,14 +120,6 @@ function firstName(prenom, nom, email) {
   return nameFromEmail(email);
 }
 
-function escapeHtml(s) {
-  return String(s || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 function buildMail(prenom, nom, email) {
   const who = firstName(prenom, nom, email);
   const greeting = who ? `Salut ${who},` : 'Salut,';
@@ -147,15 +141,7 @@ function buildMail(prenom, nom, email) {
     'David',
     'Boxing Center',
   ].join('\n');
-  const html = [
-    `<p>${escapeHtml(greeting)}</p>`,
-    `<p>C’est David du Boxing Center.</p>`,
-    `<p>Je voulais te faire profiter d’une séance d’essai au club. Elle est offerte, sa valeur habituelle est de 10 €.</p>`,
-    `<p>Tu peux choisir ta séance ici :<br><a href="${LINK}">${escapeHtml(LINK)}</a></p>`,
-    `<p>Si tu es déjà inscrit(e), ou si ce n’est pas le bon moment pour toi, tu peux simplement transmettre ce lien à quelqu’un de ton entourage.</p>`,
-    `<p>À bientôt,<br>David<br>Boxing Center</p>`,
-  ].join('\n');
-  return { subject, text, html, who };
+  return { subject, text, who };
 }
 
 function normalizeRecipients(raw) {
@@ -262,7 +248,7 @@ async function fetchSentEmails(sb) {
   return out;
 }
 
-async function sendResend({ apiKey, to, subject, text, html }) {
+async function sendResend({ apiKey, to, subject, text }) {
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
@@ -274,12 +260,9 @@ async function sendResend({ apiKey, to, subject, text, html }) {
       to: [to],
       subject,
       text,
-      html,
       reply_to: REPLY_TO,
       headers: {
         'List-Unsubscribe': `<mailto:${UNSUBSCRIBE_EMAIL}?subject=Desinscription>`,
-        Precedence: 'bulk',
-        'X-Entity-Ref-ID': `${CAMPAIGN}-${Date.now()}`,
       },
     }),
   });
@@ -364,7 +347,6 @@ async function sendOne(sb, apiKey, client) {
         to: client.email,
         subject: mail.subject,
         text: mail.text,
-        html: mail.html,
       });
       await mark(sb, row.id, 'sent');
       return { ok: true, skipped: false };
