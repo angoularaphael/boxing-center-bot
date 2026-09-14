@@ -10,7 +10,8 @@ const path = require('path');
 const { getSupabase } = require('./supabase');
 
 const CAMPAIGN = 'seance_offerte_email_2026';
-const LINK = 'https://seance-offerte.boxingcenter.fr/?src=email';
+const LINK =
+  'https://seance-offerte.boxingcenter.fr/?src=email&utm_source=email&utm_medium=email&utm_campaign=seance_offerte_2026';
 const FROM_EMAIL = process.env.RESEND_SENDER_EMAIL || 'no-reply@boxingcenter.fr';
 const REPLY_TO = process.env.RESEND_REPLY_TO || 'comptaboxing@gmail.com';
 const UNSUBSCRIBE_EMAIL = process.env.RESEND_UNSUBSCRIBE_EMAIL || REPLY_TO;
@@ -25,9 +26,16 @@ function audienceFilePath() {
   if (fs.existsSync(legacy)) return legacy;
   return byBot;
 }
-const DELAY_MS = Math.max(3000, parseInt(process.env.SEANCE_OFFERTE_EMAIL_DELAY_MS || '8000', 10) || 8000);
-const WAVE_SIZE = Math.max(50, parseInt(process.env.SEANCE_OFFERTE_WAVE_SIZE || '500', 10) || 500);
+const DELAY_MS = Math.max(800, parseInt(process.env.SEANCE_OFFERTE_EMAIL_DELAY_MS || '2000', 10) || 2000);
+const WAVE_SIZE = resolveWaveSize(process.env.SEANCE_OFFERTE_WAVE_SIZE);
 const CONCURRENCY = 1;
+
+function resolveWaveSize(raw) {
+  if (raw == null || raw === '' || /^all$/i.test(String(raw))) return 0;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n;
+}
 
 let cancelRequested = false;
 
@@ -51,6 +59,8 @@ const state = {
 let jobConfig = {
   recipients: null,
   resendApiKey: '',
+  resendAll: false,
+  waveSize: WAVE_SIZE,
 };
 
 function snapshot() {
@@ -58,7 +68,8 @@ function snapshot() {
     ...state,
     campaign: CAMPAIGN,
     delayMs: DELAY_MS,
-    waveLimit: WAVE_SIZE,
+    waveLimit: jobConfig.waveSize || 0,
+    resendAll: Boolean(jobConfig.resendAll),
     link: LINK,
   };
 }
@@ -107,6 +118,14 @@ function firstName(prenom, nom, email) {
   return nameFromEmail(email);
 }
 
+function escapeHtml(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 function buildMail(prenom, nom, email) {
   const who = firstName(prenom, nom, email);
   const greeting = who ? `Salut ${who},` : 'Salut,';
@@ -128,7 +147,15 @@ function buildMail(prenom, nom, email) {
     'David',
     'Boxing Center',
   ].join('\n');
-  return { subject, text, who };
+  const html = [
+    `<p>${escapeHtml(greeting)}</p>`,
+    `<p>C’est David du Boxing Center.</p>`,
+    `<p>Je voulais te faire profiter d’une séance d’essai au club. Elle est offerte, sa valeur habituelle est de 10 €.</p>`,
+    `<p>Tu peux choisir ta séance ici :<br><a href="${LINK}">${escapeHtml(LINK)}</a></p>`,
+    `<p>Si tu es déjà inscrit(e), ou si ce n’est pas le bon moment pour toi, tu peux simplement transmettre ce lien à quelqu’un de ton entourage.</p>`,
+    `<p>À bientôt,<br>David<br>Boxing Center</p>`,
+  ].join('\n');
+  return { subject, text, html, who };
 }
 
 function normalizeRecipients(raw) {
@@ -235,7 +262,7 @@ async function fetchSentEmails(sb) {
   return out;
 }
 
-async function sendResend({ apiKey, to, subject, text }) {
+async function sendResend({ apiKey, to, subject, text, html }) {
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
@@ -247,9 +274,12 @@ async function sendResend({ apiKey, to, subject, text }) {
       to: [to],
       subject,
       text,
+      html,
       reply_to: REPLY_TO,
       headers: {
         'List-Unsubscribe': `<mailto:${UNSUBSCRIBE_EMAIL}?subject=Desinscription>`,
+        Precedence: 'bulk',
+        'X-Entity-Ref-ID': `${CAMPAIGN}-${Date.now()}`,
       },
     }),
   });
@@ -287,11 +317,19 @@ async function claim(sb, { email, clientId, subject, body }) {
         .eq('recipient', email)
         .maybeSingle();
       if (existingError) throw existingError;
-      if (!existing || existing.status === 'sent') return null;
-      await sb
+      if (!existing) return null;
+      if (existing.status === 'sent' && !jobConfig.resendAll) return null;
+      const { error: reuseError } = await sb
         .from('outbound_messages')
-        .update({ status: 'pending', error: null })
+        .update({
+          status: 'pending',
+          error: null,
+          subject,
+          body: String(body || '').slice(0, 500),
+          bot_instance: process.env.BOT_INSTANCE_ID || 'sim1',
+        })
         .eq('id', existing.id);
+      if (reuseError) throw reuseError;
       return existing;
     }
     throw error;
@@ -326,6 +364,7 @@ async function sendOne(sb, apiKey, client) {
         to: client.email,
         subject: mail.subject,
         text: mail.text,
+        html: mail.html,
       });
       await mark(sb, row.id, 'sent');
       return { ok: true, skipped: false };
@@ -353,17 +392,17 @@ async function runJob({ resendApiKey }) {
   const apiKey = String(resendApiKey || process.env.RESEND_API_KEY || '').trim();
   if (!apiKey) throw new Error('RESEND_API_KEY manquant');
   const audience = loadAudience();
-  const sent = await fetchSentEmails(sb);
+  const sent = jobConfig.resendAll ? new Set() : await fetchSentEmails(sb);
   const pending = audience.filter((c) => !sent.has(c.email));
-  const waveLimit = Math.max(1, Number(jobConfig.waveSize) || WAVE_SIZE);
-  const queue = pending.slice(0, waveLimit);
+  const waveLimit = resolveWaveSize(jobConfig.waveSize);
+  const queue = waveLimit > 0 ? pending.slice(0, waveLimit) : pending;
 
   state.audience = audience.length;
   state.queue = pending.length;
   state.waveSize = waveLimit;
   state.remaining = Math.max(0, pending.length - queue.length);
   log(
-    `START audience=${audience.length} pending=${pending.length} wave=${queue.length} reste=${state.remaining} from=${FROM_EMAIL}`
+    `START audience=${audience.length} pending=${pending.length} send=${queue.length} reste=${state.remaining} resend=${jobConfig.resendAll ? 'all' : 'new'} from=${FROM_EMAIL} link=${LINK}`
   );
 
   let idx = 0;
@@ -381,7 +420,7 @@ async function runJob({ resendApiKey }) {
         else state.failed++;
         state.waveDone = state.done;
         if (state.done % 25 === 0) {
-          log(`PROGRESS vague ${state.done}/${queue.length} sent=${state.sent} failed=${state.failed}`);
+          log(`PROGRESS ${state.done}/${queue.length} sent=${state.sent} failed=${state.failed}`);
         }
         if (i < queue.length - 1) await sleep(DELAY_MS);
       } catch (err) {
@@ -395,7 +434,7 @@ async function runJob({ resendApiKey }) {
 
   await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
   log(
-    `WAVE_DONE sent=${state.sent} failed=${state.failed} skipped=${state.skipped} wave=${queue.length} reste=${state.remaining}`
+    `DONE sent=${state.sent} failed=${state.failed} skipped=${state.skipped} queue=${queue.length} reste=${state.remaining}`
   );
 }
 
@@ -405,7 +444,7 @@ function stop() {
   return { ok: true, stopped: true, ...snapshot() };
 }
 
-function start({ resendApiKey, recipients, waveSize, force } = {}) {
+function start({ resendApiKey, recipients, waveSize, force, resendAll } = {}) {
   const apiKey = String(resendApiKey || process.env.RESEND_API_KEY || '').trim();
   if (!apiKey) return { ok: false, error: 'RESEND_API_KEY manquant' };
   if (state.running) {
@@ -418,7 +457,8 @@ function start({ resendApiKey, recipients, waveSize, force } = {}) {
     recipients:
       Array.isArray(recipients) && recipients.length <= 50 ? normalizeRecipients(recipients) : null,
     resendApiKey: apiKey,
-    waveSize: Math.max(50, parseInt(waveSize || process.env.SEANCE_OFFERTE_WAVE_SIZE || WAVE_SIZE, 10) || WAVE_SIZE),
+    resendAll: resendAll === true,
+    waveSize: resolveWaveSize(waveSize ?? process.env.SEANCE_OFFERTE_WAVE_SIZE),
   };
 
   state.running = true;
@@ -453,5 +493,5 @@ module.exports = {
   status: snapshot,
   CAMPAIGN,
   LINK,
-  _test: { buildMail, sendResend, FROM_EMAIL, REPLY_TO },
+  _test: { buildMail, sendResend, resolveWaveSize, FROM_EMAIL, REPLY_TO, LINK },
 };

@@ -2560,6 +2560,7 @@ app.post('/api/campaign/seance-offerte-email', (req, res) => {
         resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
         recipients: body.recipients,
         waveSize: body.wave_size,
+        resendAll: body.resend === true || body.resend_all === true,
         force: Boolean(body.force),
     });
     if (!started.ok) {
