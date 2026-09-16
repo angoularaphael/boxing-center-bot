@@ -21,6 +21,39 @@ test('wave 0 / all = toute l’audience', () => {
   assert.equal(campaign._test.resolveWaveSize('500'), 500);
 });
 
+test('exclut les contacts listés sans toucher le reste', () => {
+  const { isExcluded } = campaign._test;
+  assert.equal(isExcluded({ email: 'contact@axelgele.fr', prenom: 'Axel', nom: 'GELE' }), true);
+  assert.equal(isExcluded({ email: 'marine82@live.fr', prenom: 'Marine', nom: 'Bara' }), true);
+  assert.equal(isExcluded({ email: 'martindavid@hotmail.fr', prenom: 'Maelie', nom: 'Matin-Sioen' }), true);
+  assert.equal(isExcluded({ email: 'benedicte.escaich@edf.fr', prenom: 'Fleur', nom: 'Escaich' }), true);
+  assert.equal(isExcluded({ email: 'pascaleveros@wanadoo.fr', prenom: 'Tiago', nom: 'Cerrato - Veros' }), true);
+  assert.equal(isExcluded({ email: 'ramin410@yahoo.com', prenom: 'Omid', nom: 'Ghobadi' }), true);
+  assert.equal(isExcluded({ email: 'amelie.gillet.ag@orange.fr', prenom: 'Leo', nom: 'Andrieu-Gillet' }), true);
+  assert.equal(isExcluded({ email: 'zoe.almaer@hotmail.com', prenom: 'Zoé', nom: 'Almaer' }), true);
+  assert.equal(isExcluded({ email: 'alice@example.com', prenom: 'Zoé', nom: 'Almaer' }), true);
+  assert.equal(isExcluded({ email: 'ameliebedry@hotmail.fr', prenom: 'Amélie', nom: 'Bedry' }), true);
+  assert.equal(isExcluded({ email: 'x@y.fr', prenom: 'Soumia', nom: 'Otsmane' }), true);
+  assert.equal(isExcluded({ email: 'x@y.fr', prenom: 'Stef', nom: 'Stef' }), true);
+  assert.equal(isExcluded({ email: 'x@y.fr', prenom: 'Yasmina', nom: 'Harkat' }), true);
+  assert.equal(isExcluded({ email: 'marine.aubry@live.fr', prenom: 'Marine', nom: 'Aubry' }), false);
+  assert.equal(isExcluded({ email: 'stefanpetkov91@gmail.com', prenom: 'Stefan', nom: 'Petkov' }), false);
+  assert.equal(isExcluded({ email: 'alice@example.com', prenom: 'Alice', nom: 'Martin' }), false);
+});
+
+test('slice first / second coupe l’audience en deux', () => {
+  const rows = [{ email: 'a@x.fr' }, { email: 'b@x.fr' }, { email: 'c@x.fr' }, { email: 'd@x.fr' }];
+  assert.deepEqual(
+    campaign._test.sliceAudience(rows, 'first').map((r) => r.email),
+    ['a@x.fr', 'b@x.fr']
+  );
+  assert.deepEqual(
+    campaign._test.sliceAudience(rows, 'second').map((r) => r.email),
+    ['c@x.fr', 'd@x.fr']
+  );
+  assert.equal(campaign._test.resolveSlice('sim2'), 'second');
+});
+
 test('Resend vise Principal : texte brut, pas de HTML ni Precedence bulk', async () => {
   const previousFetch = global.fetch;
   let request;

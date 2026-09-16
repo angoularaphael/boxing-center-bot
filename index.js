@@ -2561,6 +2561,7 @@ app.post('/api/campaign/seance-offerte-email', (req, res) => {
         recipients: body.recipients,
         waveSize: body.wave_size,
         resendAll: body.resend === true || body.resend_all === true,
+        slice: body.slice || body.half,
         force: Boolean(body.force),
     });
     if (!started.ok) {
@@ -2569,7 +2570,7 @@ app.post('/api/campaign/seance-offerte-email', (req, res) => {
     res.json({
         success: true,
         accepted: true,
-        note: 'Séance offerte — texte David via Resend/no-reply, lien ?src=email, suivi outbound_messages.',
+        note: 'Séance offerte — clients Portet actuels, texte David via Resend, lien ?src=email.',
         ...started,
     });
 });

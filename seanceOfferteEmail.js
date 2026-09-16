@@ -1,42 +1,79 @@
 'use strict';
 
 /**
- * Campagne séance offerte — texte David via Resend.
+ * Campagne séance offerte — clients Portet actuels, texte David via Resend.
  * Objectif : onglet Principal. À défaut Promotions, pas Spam.
  * Texte brut perso + List-Unsubscribe. Pas de HTML ni Precedence:bulk.
  * Suivi : outbound_messages + lien ?src=email.
  */
 
-const fs = require('fs');
-const path = require('path');
 const { getSupabase } = require('./supabase');
 
-const CAMPAIGN = 'seance_offerte_email_2026';
+const CAMPAIGN = 'seance_offerte_email_portet_2026';
 const LINK =
   'https://seance-offerte.boxingcenter.fr/?src=email&utm_source=email&utm_medium=email&utm_campaign=seance_offerte_2026';
 const FROM_EMAIL = process.env.RESEND_SENDER_EMAIL || 'no-reply@boxingcenter.fr';
 const REPLY_TO = process.env.RESEND_REPLY_TO || 'comptaboxing@gmail.com';
 const UNSUBSCRIBE_EMAIL = process.env.RESEND_UNSUBSCRIBE_EMAIL || REPLY_TO;
-const EXTRA_RECIPIENTS = [
-  { email: 'johnsonsuffo@gmail.com', prenom: 'Johnson', nom: '' },
-];
-function audienceFilePath() {
-  const bot = String(process.env.BOT_INSTANCE_ID || 'sim1').trim();
-  const byBot = path.join(__dirname, 'data', `seance-offerte-${bot}.json`);
-  if (fs.existsSync(byBot)) return byBot;
-  const legacy = path.join(__dirname, 'data', 'bd-triee-audience.json');
-  if (fs.existsSync(legacy)) return legacy;
-  return byBot;
-}
 const DELAY_MS = Math.max(800, parseInt(process.env.SEANCE_OFFERTE_EMAIL_DELAY_MS || '2000', 10) || 2000);
 const WAVE_SIZE = resolveWaveSize(process.env.SEANCE_OFFERTE_WAVE_SIZE);
 const CONCURRENCY = 1;
+
+const EXCLUDED_EMAILS = new Set([
+  'contact@axelgele.fr',
+  'marine82@live.fr',
+  'martindavid@hotmail.fr',
+  'benedicte.escaich@edf.fr',
+  'pascaleveros@wanadoo.fr',
+  'ramin410@yahoo.com',
+  'amelie.gillet.ag@orange.fr',
+  'zoe.almaer@hotmail.com',
+  'ameliebedry@hotmail.fr',
+]);
+
+const EXCLUDED_EMAIL_PARTS = [
+  'axelgele',
+  'marine82',
+  'martindavid@hotmail',
+  'ramin410',
+  'benedicte.escaich',
+  'pascaleveros',
+  'amelie.gillet',
+  'zoe.almaer',
+  'ameliebedry',
+];
+
+const EXCLUDED_PEOPLE = [
+  { prenom: 'soumia', nom: 'otsmane' },
+  { prenom: 'stef', nom: 'stef', nomStartsWith: true },
+  { prenom: 'zoe', nom: 'al', nomStartsWith: true },
+  { prenom: 'benedicte', nom: 'escaich' },
+  { prenom: 'pascale', nom: 'veros' },
+  { prenom: 'amelie', nom: 'gillet' },
+  { prenom: 'amelie', nom: 'bedry' },
+  { prenom: 'bedra', nom: '' },
+  { prenom: 'yasmina', nom: 'harkat' },
+];
 
 function resolveWaveSize(raw) {
   if (raw == null || raw === '' || /^all$/i.test(String(raw))) return 0;
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n) || n <= 0) return 0;
   return n;
+}
+
+function resolveSlice(raw) {
+  const v = String(raw || '')
+    .trim()
+    .toLowerCase();
+  if (v === 'all' || v === '*' || v === 'given') return 'all';
+  if (v === 'second' || v === 'rest' || v === '2' || v === 'sim2') return 'second';
+  return 'first';
+}
+
+function defaultSlice() {
+  const id = String(process.env.BOT_INSTANCE_ID || 'sim1').trim().toLowerCase();
+  return id === 'sim2' ? 'second' : 'first';
 }
 
 let cancelRequested = false;
@@ -56,6 +93,9 @@ const state = {
   failed: 0,
   skipped: 0,
   via: 'resend',
+  slice: defaultSlice(),
+  source: 'portet_clients',
+  excluded: 0,
 };
 
 let jobConfig = {
@@ -63,6 +103,7 @@ let jobConfig = {
   resendApiKey: '',
   resendAll: false,
   waveSize: WAVE_SIZE,
+  slice: defaultSlice(),
 };
 
 function snapshot() {
@@ -88,6 +129,15 @@ function titleCase(word) {
   const s = String(word || '').trim();
   if (!s) return '';
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
+function fold(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^a-z0-9@._+-]+/g, ' ')
+    .trim();
 }
 
 function nameFromEmail(email) {
@@ -154,7 +204,7 @@ function normalizeRecipients(raw) {
       email: String(row.email || '')
         .trim()
         .toLowerCase(),
-      ville: String(row.ville || '').trim(),
+      ville: String(row.ville || row.salle || '').trim(),
     }))
     .filter((row) => row.email.includes('@'));
 }
@@ -176,50 +226,98 @@ function isBlocked(email) {
   return local === 'boxingcenter31' || local.includes('boxingcenter31');
 }
 
-function mergeExtraRecipients(rows) {
-  const byEmail = new Map();
-  for (const row of rows || []) {
-    const email = String(row.email || '').trim().toLowerCase();
-    if (!email || isBlocked(email)) continue;
-    byEmail.set(email, row);
-  }
-  for (const extra of EXTRA_RECIPIENTS) {
-    const email = String(extra.email || '').trim().toLowerCase();
-    if (!email || isBlocked(email) || byEmail.has(email)) continue;
-    byEmail.set(email, {
-      id: null,
-      prenom: String(extra.prenom || '').trim(),
-      nom: String(extra.nom || '').trim(),
-      email,
-      ville: String(extra.ville || '').trim(),
-    });
-  }
-  return [...byEmail.values()];
+function nameMatches(value, needle, { startsWith = false, prefix = false } = {}) {
+  const hay = fold(value);
+  const n = fold(needle);
+  if (!hay || !n) return false;
+  if (hay === n) return true;
+  if (startsWith) return hay.startsWith(n);
+  if (prefix) return hay === n || hay.startsWith(`${n} `) || hay.startsWith(n);
+  return hay === n || hay.includes(` ${n} `) || hay.startsWith(`${n} `) || hay.endsWith(` ${n}`);
 }
 
-function loadAudience() {
-  if (Array.isArray(jobConfig.recipients) && jobConfig.recipients.length <= 50) {
-    return mergeExtraRecipients(jobConfig.recipients.filter((row) => !isBlocked(row.email)));
+function isExcluded(row) {
+  const email = String(row?.email || '')
+    .trim()
+    .toLowerCase();
+  if (email && EXCLUDED_EMAILS.has(email)) return true;
+  if (email && EXCLUDED_EMAIL_PARTS.some((part) => email.includes(part))) return true;
+
+  const prenom = fold(row?.prenom);
+  const nom = fold(row?.nom);
+
+  for (const person of EXCLUDED_PEOPLE) {
+    const p = person.prenom;
+    const n = person.nom;
+    if (p && n) {
+      const prenomHit = nameMatches(prenom, p, { prefix: true });
+      const nomHit = person.nomStartsWith
+        ? nameMatches(nom, n, { startsWith: true })
+        : nameMatches(nom, n);
+      if (prenomHit && nomHit) return true;
+    } else if (p && !n) {
+      if (nameMatches(prenom, p) || nameMatches(nom, p, { startsWith: true })) return true;
+    }
   }
-  const audienceFile = audienceFilePath();
-  if (!fs.existsSync(audienceFile)) {
-    throw new Error(`Audience manquante: ${audienceFile} (git pull + build-seance-offerte-audience.js)`);
+  return false;
+}
+
+function sliceAudience(rows, slice) {
+  const list = Array.isArray(rows) ? rows : [];
+  const resolved = resolveSlice(slice);
+  if (resolved === 'all') return list;
+  const half = Math.floor(list.length / 2);
+  return resolved === 'second' ? list.slice(half) : list.slice(0, half);
+}
+
+async function fetchPortetClients(sb) {
+  const rows = [];
+  const pageSize = 1000;
+  let from = 0;
+  for (;;) {
+    const { data, error } = await sb
+      .from('portet_clients')
+      .select('id, prenom, nom, email, salle, created_at')
+      .not('email', 'is', null)
+      .neq('email', '')
+      .order('created_at', { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    if (!data?.length) break;
+    rows.push(...data);
+    if (data.length < pageSize) break;
+    from += pageSize;
   }
-  const raw = JSON.parse(fs.readFileSync(audienceFile, 'utf8'));
-  if (!Array.isArray(raw)) throw new Error('Audience JSON invalide');
-  return mergeExtraRecipients(
-    raw
-      .map((row) => ({
-        id: coerceClientId(row.id),
-        prenom: String(row.prenom || '').trim(),
-        nom: String(row.nom || '').trim(),
-        email: String(row.email || '')
-          .trim()
-          .toLowerCase(),
-        ville: String(row.ville || '').trim(),
-      }))
-      .filter((row) => row.email.includes('@') && !isBlocked(row.email))
-  );
+  return rows;
+}
+
+async function loadAudience(sb) {
+  if (Array.isArray(jobConfig.recipients) && jobConfig.recipients.length) {
+    return jobConfig.recipients.filter((row) => !isBlocked(row.email) && !isExcluded(row));
+  }
+  const raw = await fetchPortetClients(sb);
+  const byEmail = new Map();
+  let excluded = 0;
+  for (const row of raw) {
+    const email = String(row.email || '')
+      .trim()
+      .toLowerCase();
+    if (!email || !email.includes('@') || isBlocked(email)) continue;
+    if (isExcluded({ ...row, email })) {
+      excluded += 1;
+      continue;
+    }
+    if (byEmail.has(email)) continue;
+    byEmail.set(email, {
+      id: coerceClientId(row.id),
+      prenom: String(row.prenom || '').trim(),
+      nom: String(row.nom || '').trim(),
+      email,
+      ville: String(row.salle || '').trim(),
+    });
+  }
+  state.excluded = excluded;
+  return [...byEmail.values()].sort((a, b) => a.email.localeCompare(b.email));
 }
 
 async function fetchSentEmails(sb) {
@@ -373,18 +471,21 @@ async function runJob({ resendApiKey }) {
   const sb = getSupabase();
   const apiKey = String(resendApiKey || process.env.RESEND_API_KEY || '').trim();
   if (!apiKey) throw new Error('RESEND_API_KEY manquant');
-  const audience = loadAudience();
+  const audience = await loadAudience(sb);
+  const slice = resolveSlice(jobConfig.slice);
+  const pool = sliceAudience(audience, slice);
   const sent = jobConfig.resendAll ? new Set() : await fetchSentEmails(sb);
-  const pending = audience.filter((c) => !sent.has(c.email));
+  const pending = pool.filter((c) => !sent.has(c.email));
   const waveLimit = resolveWaveSize(jobConfig.waveSize);
   const queue = waveLimit > 0 ? pending.slice(0, waveLimit) : pending;
 
   state.audience = audience.length;
+  state.slice = slice;
   state.queue = pending.length;
   state.waveSize = waveLimit;
   state.remaining = Math.max(0, pending.length - queue.length);
   log(
-    `START audience=${audience.length} pending=${pending.length} send=${queue.length} reste=${state.remaining} resend=${jobConfig.resendAll ? 'all' : 'new'} from=${FROM_EMAIL} link=${LINK}`
+    `START source=portet_clients audience=${audience.length} excluded=${state.excluded} slice=${slice} pool=${pool.length} pending=${pending.length} send=${queue.length} reste=${state.remaining} resend=${jobConfig.resendAll ? 'all' : 'new'} from=${FROM_EMAIL} link=${LINK}`
   );
 
   let idx = 0;
@@ -395,6 +496,11 @@ async function runJob({ resendApiKey }) {
       if (cancelRequested) return;
       const client = queue[i];
       try {
+        if (isBlocked(client.email) || isExcluded(client)) {
+          state.skipped++;
+          state.done++;
+          continue;
+        }
         const result = await sendOne(sb, apiKey, client);
         state.done++;
         if (result.skipped) state.skipped++;
@@ -426,7 +532,7 @@ function stop() {
   return { ok: true, stopped: true, ...snapshot() };
 }
 
-function start({ resendApiKey, recipients, waveSize, force, resendAll } = {}) {
+function start({ resendApiKey, recipients, waveSize, force, resendAll, slice } = {}) {
   const apiKey = String(resendApiKey || process.env.RESEND_API_KEY || '').trim();
   if (!apiKey) return { ok: false, error: 'RESEND_API_KEY manquant' };
   if (state.running) {
@@ -441,6 +547,7 @@ function start({ resendApiKey, recipients, waveSize, force, resendAll } = {}) {
     resendApiKey: apiKey,
     resendAll: resendAll === true,
     waveSize: resolveWaveSize(waveSize ?? process.env.SEANCE_OFFERTE_WAVE_SIZE),
+    slice: resolveSlice(slice || defaultSlice()),
   };
 
   state.running = true;
@@ -453,6 +560,8 @@ function start({ resendApiKey, recipients, waveSize, force, resendAll } = {}) {
   state.skipped = 0;
   state.audience = 0;
   state.queue = 0;
+  state.excluded = 0;
+  state.slice = jobConfig.slice;
 
   setImmediate(() => {
     runJob({ resendApiKey: apiKey })
@@ -475,5 +584,16 @@ module.exports = {
   status: snapshot,
   CAMPAIGN,
   LINK,
-  _test: { buildMail, sendResend, resolveWaveSize, FROM_EMAIL, REPLY_TO, LINK },
+  _test: {
+    buildMail,
+    sendResend,
+    resolveWaveSize,
+    resolveSlice,
+    isExcluded,
+    sliceAudience,
+    FROM_EMAIL,
+    REPLY_TO,
+    LINK,
+    CAMPAIGN,
+  },
 };
