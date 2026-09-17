@@ -15,6 +15,12 @@ test('le mail relance dit que c’était un bug et garde le lien', () => {
   assert.doesNotMatch(mail.text, /transmettre ce lien|entourage/);
 });
 
+test('formulaire en erreur vs inscription ensuite OK', () => {
+  assert.equal(campaign._test.formFailed({ meta: { status: 'error', last_error: 'fetch failed' } }), true);
+  assert.equal(campaign._test.formSucceededLater({ meta: { status: 'queued' } }), true);
+  assert.equal(campaign._test.formSucceededLater({ meta: { status: 'error', last_error: 'fetch failed' } }), false);
+});
+
 test('slice first / second', () => {
   const rows = [{ email: 'a@x.fr' }, { email: 'b@x.fr' }, { email: 'c@x.fr' }, { email: 'd@x.fr' }];
   assert.deepEqual(

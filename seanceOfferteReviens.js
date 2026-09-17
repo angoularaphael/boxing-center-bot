@@ -1,16 +1,14 @@
 'use strict';
 
 /**
- * Relance séance offerte — le 1er message disait à tort « déjà inscrit ».
- * Audience = mails déjà envoyés (Beauzelle + Portet) + fiches QR en erreur,
- * hors inscriptions déjà confirmées.
+ * Relance séance offerte — uniquement les gens qui ont ouvert le formulaire
+ * et ont eu une erreur (pas toute la campagne mail/SMS/WA).
  */
 
 const { getSupabase } = require('./supabase');
 const offer = require('./seanceOfferteEmail');
 
 const CAMPAIGN = 'seance_offerte_reviens_bug_2026';
-const PREVIOUS = ['seance_offerte_email_2026', 'seance_offerte_email_portet_2026'];
 const LINK =
   'https://seance-offerte.boxingcenter.fr/?src=email&utm_source=email&utm_medium=email&utm_campaign=seance_offerte_reviens_2026';
 const FROM_EMAIL = process.env.RESEND_SENDER_EMAIL || 'no-reply@boxingcenter.fr';
@@ -58,8 +56,7 @@ function resolveSlice(raw) {
 }
 
 function defaultSlice() {
-  const id = String(process.env.BOT_INSTANCE_ID || 'sim1').trim().toLowerCase();
-  return id === 'sim2' ? 'second' : 'first';
+  return 'all';
 }
 
 function sliceAudience(rows, slice) {
@@ -122,60 +119,51 @@ async function paginate(sb, makeQuery) {
   return rows;
 }
 
-async function loadSkipEmails(sb) {
-  const skip = new Set();
-  const rows = await paginate(sb, () =>
-    sb.from('tunnel_leads').select('email,meta').eq('tunnel', 'seance_essai')
-  );
-  for (const row of rows) {
-    const status = String(row.meta?.status || '').toLowerCase();
-    if (status === 'error') continue;
-    const email = String(row.email || '').trim().toLowerCase();
-    if (email.includes('@')) skip.add(email);
-  }
-  return skip;
+function leadStatus(row) {
+  return String(row?.meta?.status || '').toLowerCase();
+}
+
+function leadError(row) {
+  return String(row?.meta?.last_error || row?.meta?.error || '').trim();
+}
+
+function formFailed(row) {
+  const status = leadStatus(row);
+  const err = leadError(row).toLowerCase();
+  return status === 'error' || Boolean(err);
+}
+
+function formSucceededLater(row) {
+  const status = leadStatus(row);
+  return ['confirmed', 'queued', 'manager_notified'].includes(status) && !leadError(row);
 }
 
 async function loadAudience(sb) {
-  const skip = await loadSkipEmails(sb);
-  const byEmail = new Map();
-
-  for (const campaign of PREVIOUS) {
-    const rows = await paginate(sb, () =>
-      sb
-        .from('outbound_messages')
-        .select('recipient,subject')
-        .eq('campaign', campaign)
-        .eq('channel', 'email')
-        .eq('status', 'sent')
-        .order('created_at', { ascending: true })
-    );
-    for (const row of rows) {
-      const email = String(row.recipient || '').trim().toLowerCase();
-      if (!email.includes('@') || skip.has(email) || offer._test.isExcluded({ email })) continue;
-      if (byEmail.has(email)) continue;
-      byEmail.set(email, { email, prenom: '', nom: '', subject: row.subject || '' });
-    }
-  }
-
-  const qrErrors = await paginate(sb, () =>
-    sb.from('tunnel_leads').select('prenom,nom,email,meta').eq('tunnel', 'seance_essai')
+  const rows = await paginate(sb, () =>
+    sb
+      .from('tunnel_leads')
+      .select('prenom,nom,email,telephone,meta,created_at')
+      .eq('tunnel', 'seance_essai')
+      .order('created_at', { ascending: true })
   );
-  for (const row of qrErrors) {
-    if (String(row.meta?.status || '').toLowerCase() !== 'error') continue;
+
+  const byEmail = new Map();
+  const succeeded = new Set();
+  for (const row of rows) {
     const email = String(row.email || '').trim().toLowerCase();
-    if (!email.includes('@') || skip.has(email) || offer._test.isExcluded({ email, prenom: row.prenom, nom: row.nom })) {
-      continue;
-    }
-    if (byEmail.has(email)) continue;
+    if (!email.includes('@')) continue;
+    if (formSucceededLater(row)) succeeded.add(email);
+    if (!formFailed(row)) continue;
+    if (offer._test.isExcluded({ email, prenom: row.prenom, nom: row.nom })) continue;
     byEmail.set(email, {
       email,
       prenom: String(row.prenom || '').trim(),
       nom: String(row.nom || '').trim(),
+      telephone: String(row.telephone || '').trim(),
       subject: '',
     });
   }
-
+  for (const email of succeeded) byEmail.delete(email);
   return [...byEmail.values()].sort((a, b) => a.email.localeCompare(b.email));
 }
 
@@ -310,6 +298,11 @@ async function runJob({ resendApiKey }) {
   const apiKey = String(resendApiKey || process.env.RESEND_API_KEY || '').trim();
   if (!apiKey) throw new Error('RESEND_API_KEY manquant');
   const audience = await loadAudience(sb);
+  if (audience.length > 50) {
+    throw new Error(
+      `Audience trop large (${audience.length}) : relance limitée aux erreurs formulaire`
+    );
+  }
   const slice = resolveSlice(jobConfig.slice);
   const pool = sliceAudience(audience, slice);
   const sent = await fetchSentEmails(sb);
@@ -395,12 +388,14 @@ module.exports = {
   status: snapshot,
   CAMPAIGN,
   LINK,
+  loadAudience,
   _test: {
     buildMail,
     resolveSlice,
     sliceAudience,
+    formFailed,
+    formSucceededLater,
     CAMPAIGN,
     LINK,
-    PREVIOUS,
   },
 };
