@@ -11,6 +11,8 @@ test('le mail reste en texte perso avec le lien traceur src=email', () => {
   assert.match(mail.text, /^Salut Alice,/);
   assert.match(mail.text, /src=email/);
   assert.match(mail.text, /utm_source=email/);
+  assert.match(mail.text, /déjà membre/);
+  assert.doesNotMatch(mail.text, /transmettre ce lien|entourage/);
   assert.equal(mail.html, undefined);
   assert.doesNotMatch(mail.text, /<html|<a\s|<p>/i);
 });

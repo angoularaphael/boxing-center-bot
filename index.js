@@ -110,6 +110,7 @@ const offresTwoFromEmail = require('./offresTwoFromEmail');
 const balmaDavidCampaign = require('./balmaDavidCampaign');
 const enfantsCampaign = require('./enfantsCampaign');
 const seanceOfferteEmail = require('./seanceOfferteEmail');
+const seanceOfferteReviens = require('./seanceOfferteReviens');
 
 const TEST_TARGET_PHONE = getTestSendPhone();
 const TEST_TARGET_EMAIL = getTestSendEmail();
@@ -2571,6 +2572,35 @@ app.post('/api/campaign/seance-offerte-email', (req, res) => {
         success: true,
         accepted: true,
         note: 'Séance offerte — clients Portet actuels, texte David via Resend, lien ?src=email.',
+        ...started,
+    });
+});
+
+app.get('/api/campaign/seance-offerte-reviens', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    res.json({ success: true, ...seanceOfferteReviens.status() });
+});
+
+app.delete('/api/campaign/seance-offerte-reviens', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    res.json({ success: true, ...seanceOfferteReviens.stop() });
+});
+
+app.post('/api/campaign/seance-offerte-reviens', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const body = req.body || {};
+    const started = seanceOfferteReviens.start({
+        resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+        slice: body.slice || body.half,
+        force: Boolean(body.force),
+    });
+    if (!started.ok) {
+        return res.status(400).json({ error: started.error || 'impossible de démarrer' });
+    }
+    res.json({
+        success: true,
+        accepted: true,
+        note: 'Relance bug « déjà inscrit » — mails déjà envoyés, hors inscriptions confirmées.',
         ...started,
     });
 });
