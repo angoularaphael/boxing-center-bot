@@ -1,26 +1,21 @@
 'use strict';
 
 /**
- * Campagne Sport2000 — 2 mails / personne via david@boxingcenter.fr :
- *   1) « Bonjour, comment tu vas ? » (texte perso, sans lien)
- *   2) 7 s plus tard : David + liens séance / site
- * Objectif : Principale ou Promotions (pas le spoof no-reply).
+ * Campagne Sport2000 — 1 mail David via david@boxingcenter.fr.
+ * Audience fichier JSON. Objectif Principale / Promotions.
  */
 
 const fs = require('fs');
 const path = require('path');
 const { getSupabase } = require('./supabase');
 
-const CAMPAIGN_HI = 'sport2000_hi_2026';
-const CAMPAIGN_DAVID = 'sport2000_david_2026';
-const CAMPAIGN = CAMPAIGN_DAVID;
+const CAMPAIGN = 'sport2000_david_2026';
 const LINK = 'https://seance-offerte.boxingcenter.fr/?src=email';
 const SITE_LINK = 'https://boxingcenter.fr';
 const FROM_NAME = 'David';
 const FROM_EMAIL = 'david@boxingcenter.fr';
 const REPLY_TO = 'boxingcentertls@gmail.com';
 const UNSUBSCRIBE_EMAIL = process.env.RESEND_UNSUBSCRIBE_EMAIL || REPLY_TO;
-const PAIR_GAP_MS = Math.max(1000, parseInt(process.env.SPORT2000_PAIR_GAP_MS || '7000', 10) || 7000);
 const DELAY_MS = Math.max(800, parseInt(process.env.SPORT2000_EMAIL_DELAY_MS || '3000', 10) || 3000);
 const WAVE_SIZE = resolveWaveSize(process.env.SPORT2000_WAVE_SIZE);
 const CONCURRENCY = 1;
@@ -66,7 +61,6 @@ const state = {
   via: 'resend',
   slice: defaultSlice(),
   source: 'sport2000',
-  pairGapMs: PAIR_GAP_MS,
 };
 
 let jobConfig = {
@@ -80,10 +74,8 @@ let jobConfig = {
 function snapshot() {
   return {
     ...state,
-    campaignHi: CAMPAIGN_HI,
-    campaignDavid: CAMPAIGN_DAVID,
+    campaign: CAMPAIGN,
     delayMs: DELAY_MS,
-    pairGapMs: PAIR_GAP_MS,
     waveLimit: jobConfig.waveSize || 0,
     resendAll: Boolean(jobConfig.resendAll),
     link: LINK,
@@ -121,25 +113,13 @@ function firstName(prenom, nom, email) {
   return '';
 }
 
-/** Même objet sur les 2 mails → fil de discussion Gmail. */
-function threadSubject(who) {
-  return who ? `Salut ${who}` : 'Salut';
-}
-
-function buildHiMail(prenom, nom, email) {
+function buildMail(prenom, nom, email) {
   const who = firstName(prenom, nom, email);
-  const subject = threadSubject(who);
-  const text = who
-    ? [`Bonjour ${who},`, '', 'Comment tu vas ?'].join('\n')
-    : ['Bonjour,', '', 'Comment tu vas ?'].join('\n');
-  return { subject, text, who };
-}
-
-function buildDavidMail(prenom, nom, email) {
-  const who = firstName(prenom, nom, email);
-  const subject = threadSubject(who);
+  const greeting = who ? `Salut ${who},` : 'Salut,';
+  const subject = who ? `Salut ${who}` : 'Salut';
   const text = [
-    ...(who ? [`${who},`, ''] : []),
+    greeting,
+    '',
     'C’est David du Boxing Center.',
     '',
     'Tu peux venir faire une séance dans n’importe lequel de nos clubs. Choisis un créneau ici :',
@@ -151,14 +131,9 @@ function buildDavidMail(prenom, nom, email) {
     'À bientôt,',
     'David',
     '',
-    `Pour ne plus recevoir ces messages : réponds « stop ».`,
+    'Pour ne plus recevoir ces messages : réponds « stop ».',
   ].join('\n');
   return { subject, text, who };
-}
-
-/** Compat tests / anciens appels → mail David (2e). */
-function buildMail(prenom, nom, email) {
-  return buildDavidMail(prenom, nom, email);
 }
 
 function normalizeRecipients(raw) {
@@ -221,7 +196,7 @@ async function loadAudience() {
   return loadAudienceFromFile();
 }
 
-async function fetchSentEmails(sb, campaign) {
+async function fetchSentEmails(sb) {
   const out = new Set();
   const pageSize = 1000;
   let from = 0;
@@ -229,7 +204,7 @@ async function fetchSentEmails(sb, campaign) {
     const { data, error } = await sb
       .from('outbound_messages')
       .select('recipient')
-      .eq('campaign', campaign)
+      .eq('campaign', CAMPAIGN)
       .eq('channel', 'email')
       .eq('status', 'sent')
       .range(from, from + pageSize - 1);
@@ -274,11 +249,11 @@ async function sendResend({ apiKey, to, subject, text }) {
   return data.id;
 }
 
-async function claim(sb, { campaign, email, subject, body }) {
+async function claim(sb, { email, subject, body }) {
   const { data, error } = await sb
     .from('outbound_messages')
     .insert({
-      campaign,
+      campaign: CAMPAIGN,
       channel: 'email',
       recipient: email,
       client_id: null,
@@ -294,7 +269,7 @@ async function claim(sb, { campaign, email, subject, body }) {
       const { data: existing, error: existingError } = await sb
         .from('outbound_messages')
         .select('id,status')
-        .eq('campaign', campaign)
+        .eq('campaign', CAMPAIGN)
         .eq('channel', 'email')
         .eq('recipient', email)
         .maybeSingle();
@@ -328,10 +303,10 @@ async function mark(sb, id, status, errorMessage) {
   await sb.from('outbound_messages').update(patch).eq('id', id);
 }
 
-async function deliver(sb, apiKey, { campaign, email, mail }) {
+async function sendOne(sb, apiKey, client) {
+  const mail = buildMail(client.prenom, client.nom, client.email);
   const row = await claim(sb, {
-    campaign,
-    email,
+    email: client.email,
     subject: mail.subject,
     body: mail.text,
   });
@@ -342,7 +317,7 @@ async function deliver(sb, apiKey, { campaign, email, mail }) {
     try {
       await sendResend({
         apiKey,
-        to: email,
+        to: client.email,
         subject: mail.subject,
         text: mail.text,
       });
@@ -355,7 +330,7 @@ async function deliver(sb, apiKey, { campaign, email, mail }) {
         /rate|limit|too many|ECONNRESET|ETIMEDOUT|ENOTFOUND|network|socket|fetch failed/i.test(lastErr)
       ) {
         const wait = 20000 * attempt + Math.floor(Math.random() * 8000);
-        log(`RETRY ${campaign} ${email} wait ${wait}ms (${lastErr})`);
+        log(`RETRY ${client.email} wait ${wait}ms (${lastErr})`);
         await sleep(wait);
         continue;
       }
@@ -363,41 +338,8 @@ async function deliver(sb, apiKey, { campaign, email, mail }) {
     }
   }
   await mark(sb, row.id, 'failed', lastErr);
-  log(`FAIL ${campaign} ${email} ${lastErr}`);
+  log(`FAIL ${client.email} ${lastErr}`);
   return { ok: false, skipped: false, error: lastErr };
-}
-
-async function sendPair(sb, apiKey, client, { alreadyHi, alreadyDavid }) {
-  const hi = buildHiMail(client.prenom, client.nom, client.email);
-  const david = buildDavidMail(client.prenom, client.nom, client.email);
-  let anyOk = false;
-  let anyFail = false;
-  let skippedBoth = true;
-
-  if (!alreadyHi) {
-    const r1 = await deliver(sb, apiKey, { campaign: CAMPAIGN_HI, email: client.email, mail: hi });
-    if (r1.ok) anyOk = true;
-    if (r1.error) anyFail = true;
-    if (!r1.skipped) skippedBoth = false;
-    if (r1.ok || (!r1.skipped && !alreadyDavid)) {
-      await sleep(PAIR_GAP_MS);
-    }
-  }
-
-  if (!alreadyDavid) {
-    const r2 = await deliver(sb, apiKey, {
-      campaign: CAMPAIGN_DAVID,
-      email: client.email,
-      mail: david,
-    });
-    if (r2.ok) anyOk = true;
-    if (r2.error) anyFail = true;
-    if (!r2.skipped) skippedBoth = false;
-  }
-
-  if (skippedBoth) return { ok: false, skipped: true };
-  if (anyFail && !anyOk) return { ok: false, skipped: false, error: 'pair failed' };
-  return { ok: anyOk, skipped: false };
 }
 
 async function runJob({ resendApiKey }) {
@@ -407,12 +349,8 @@ async function runJob({ resendApiKey }) {
   const audience = await loadAudience();
   const slice = resolveSlice(jobConfig.slice);
   const pool = sliceAudience(audience, slice);
-
-  const [sentHi, sentDavid] = jobConfig.resendAll
-    ? [new Set(), new Set()]
-    : await Promise.all([fetchSentEmails(sb, CAMPAIGN_HI), fetchSentEmails(sb, CAMPAIGN_DAVID)]);
-
-  const pending = pool.filter((c) => !sentHi.has(c.email) || !sentDavid.has(c.email));
+  const sent = jobConfig.resendAll ? new Set() : await fetchSentEmails(sb);
+  const pending = pool.filter((c) => !sent.has(c.email));
   const waveLimit = resolveWaveSize(jobConfig.waveSize);
   const queue = waveLimit > 0 ? pending.slice(0, waveLimit) : pending;
 
@@ -422,7 +360,7 @@ async function runJob({ resendApiKey }) {
   state.waveSize = waveLimit;
   state.remaining = Math.max(0, pending.length - queue.length);
   log(
-    `START source=sport2000 audience=${audience.length} slice=${slice} pool=${pool.length} pending=${pending.length} send=${queue.length} gap=${PAIR_GAP_MS}ms from=${FROM_EMAIL}`
+    `START source=sport2000 audience=${audience.length} slice=${slice} pool=${pool.length} pending=${pending.length} send=${queue.length} from=${FROM_EMAIL}`
   );
 
   let idx = 0;
@@ -438,10 +376,7 @@ async function runJob({ resendApiKey }) {
           state.done++;
           continue;
         }
-        const result = await sendPair(sb, apiKey, client, {
-          alreadyHi: sentHi.has(client.email) && !jobConfig.resendAll,
-          alreadyDavid: sentDavid.has(client.email) && !jobConfig.resendAll,
-        });
+        const result = await sendOne(sb, apiKey, client);
         state.done++;
         if (result.skipped) state.skipped++;
         else if (result.ok) state.sent++;
@@ -517,7 +452,6 @@ function start({ resendApiKey, recipients, waveSize, force, resendAll, slice } =
   return { ok: true, accepted: true, ...snapshot() };
 }
 
-/** Test : mail 1 puis mail 2 (7 s), sans claim outbound. */
 async function sendTest({ resendApiKey, to, prenom, nom } = {}) {
   const apiKey = String(resendApiKey || process.env.RESEND_API_KEY || '').trim();
   if (!apiKey) return { ok: false, error: 'RESEND_API_KEY manquant' };
@@ -525,32 +459,18 @@ async function sendTest({ resendApiKey, to, prenom, nom } = {}) {
     .trim()
     .toLowerCase();
   if (!email.includes('@')) return { ok: false, error: 'email invalide' };
-
-  const hi = buildHiMail(prenom || '', nom || '', email);
-  const david = buildDavidMail(prenom || '', nom || '', email);
-
-  const id1 = await sendResend({
+  const mail = buildMail(prenom || '', nom || '', email);
+  const id = await sendResend({
     apiKey,
     to: email,
-    subject: hi.subject,
-    text: hi.text,
+    subject: mail.subject,
+    text: mail.text,
   });
-  await sleep(PAIR_GAP_MS);
-  const id2 = await sendResend({
-    apiKey,
-    to: email,
-    subject: david.subject,
-    text: david.text,
-  });
-
   return {
     ok: true,
-    idHi: id1,
-    idDavid: id2,
-    pairGapMs: PAIR_GAP_MS,
-    subject: hi.subject,
-    textHi: hi.text,
-    textDavid: david.text,
+    id,
+    subject: mail.subject,
+    text: mail.text,
     from: FROM_EMAIL,
     fromName: FROM_NAME,
     replyTo: REPLY_TO,
@@ -565,14 +485,10 @@ module.exports = {
   status: snapshot,
   sendTest,
   CAMPAIGN,
-  CAMPAIGN_HI,
-  CAMPAIGN_DAVID,
   LINK,
   SITE_LINK,
   _test: {
     buildMail,
-    buildHiMail,
-    buildDavidMail,
     sendResend,
     resolveWaveSize,
     resolveSlice,
@@ -583,9 +499,6 @@ module.exports = {
     LINK,
     SITE_LINK,
     CAMPAIGN,
-    CAMPAIGN_HI,
-    CAMPAIGN_DAVID,
     DELAY_MS,
-    PAIR_GAP_MS,
   },
 };

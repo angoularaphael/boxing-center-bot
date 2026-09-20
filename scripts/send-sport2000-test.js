@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * Test paire Sport2000 (hi + David 7s) → une adresse.
- *   node scripts/send-sport2000-test.js stariayanis422@gmail.com Yanis
+ * Test 1 mail Sport2000 David.
+ *   node scripts/send-sport2000-test.js jeremyfidge@gmail.com Jeremy
  */
 
 const fs = require('fs');
@@ -36,9 +36,8 @@ loadEnvFile(path.join(ROOT, '..', 'gestion-manager', '.env'));
 const campaign = require('../seanceOfferteSport2000');
 
 async function main() {
-  const to = String(process.argv[2] || 'stariayanis422@gmail.com').trim().toLowerCase();
-  const prenom = String(process.argv[3] || 'Yanis').trim();
-  console.log(`Envoi paire → ${to} (gap ${campaign._test.PAIR_GAP_MS}ms, from David <${campaign._test.FROM_EMAIL}>)…`);
+  const to = String(process.argv[2] || 'jeremyfidge@gmail.com').trim().toLowerCase();
+  const prenom = String(process.argv[3] || 'Jeremy').trim();
   const result = await campaign.sendTest({ to, prenom });
   if (!result.ok) {
     console.error('FAIL', result.error);
@@ -48,22 +47,18 @@ async function main() {
     JSON.stringify(
       {
         ok: true,
-        idHi: result.idHi,
-        idDavid: result.idDavid,
+        id: result.id,
         to,
         subject: result.subject,
         from: `${result.fromName} <${result.from}>`,
         replyTo: result.replyTo,
-        pairGapMs: result.pairGapMs,
       },
       null,
       2
     )
   );
-  console.log('--- MAIL 1 ---');
-  console.log(result.textHi);
-  console.log('--- MAIL 2 ---');
-  console.log(result.textDavid);
+  console.log('--- BODY ---');
+  console.log(result.text);
 }
 
 main().catch((err) => {
