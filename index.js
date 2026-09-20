@@ -111,6 +111,7 @@ const balmaDavidCampaign = require('./balmaDavidCampaign');
 const enfantsCampaign = require('./enfantsCampaign');
 const seanceOfferteEmail = require('./seanceOfferteEmail');
 const seanceOfferteReviens = require('./seanceOfferteReviens');
+const seanceOfferteSport2000 = require('./seanceOfferteSport2000');
 
 const TEST_TARGET_PHONE = getTestSendPhone();
 const TEST_TARGET_EMAIL = getTestSendEmail();
@@ -2603,6 +2604,57 @@ app.post('/api/campaign/seance-offerte-reviens', (req, res) => {
         note: 'Relance bug « déjà inscrit » — mails déjà envoyés, hors inscriptions confirmées.',
         ...started,
     });
+});
+
+app.get('/api/campaign/sport2000-email', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    res.json({ success: true, ...seanceOfferteSport2000.status() });
+});
+
+app.delete('/api/campaign/sport2000-email', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    res.json({ success: true, ...seanceOfferteSport2000.stop() });
+});
+
+app.post('/api/campaign/sport2000-email', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const body = req.body || {};
+    const started = seanceOfferteSport2000.start({
+        resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+        recipients: body.recipients,
+        waveSize: body.wave_size,
+        resendAll: body.resend === true || body.resend_all === true,
+        slice: body.slice || body.half,
+        force: Boolean(body.force),
+    });
+    if (!started.ok) {
+        return res.status(400).json({ error: started.error || 'impossible de démarrer' });
+    }
+    res.json({
+        success: true,
+        accepted: true,
+        note: 'Sport2000 — texte David, reply boxingcentertls, lien ?src=email, délai 3s.',
+        ...started,
+    });
+});
+
+app.post('/api/campaign/sport2000-email/test', async (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const body = req.body || {};
+    try {
+        const result = await seanceOfferteSport2000.sendTest({
+            resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+            to: body.to || body.email,
+            prenom: body.prenom,
+            nom: body.nom,
+        });
+        if (!result.ok) {
+            return res.status(400).json({ error: result.error || 'échec test' });
+        }
+        res.json({ success: true, ...result });
+    } catch (err) {
+        res.status(500).json({ error: err.message || String(err) });
+    }
 });
 
 app.listen(PORT, () => {
