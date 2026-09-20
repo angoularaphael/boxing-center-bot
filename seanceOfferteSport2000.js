@@ -12,6 +12,7 @@ const { getSupabase } = require('./supabase');
 const CAMPAIGN = 'seance_offerte_email_sport2000_2026';
 const LINK = 'https://seance-offerte.boxingcenter.fr/?src=email';
 const SITE_LINK = 'https://boxingcenter.fr';
+const FROM_NAME = 'David de Boxing Center';
 const FROM_EMAIL = process.env.RESEND_SENDER_EMAIL || 'no-reply@boxingcenter.fr';
 const REPLY_TO = 'boxingcentertls@gmail.com';
 const UNSUBSCRIBE_EMAIL = process.env.RESEND_UNSUBSCRIBE_EMAIL || REPLY_TO;
@@ -78,8 +79,10 @@ function snapshot() {
     waveLimit: jobConfig.waveSize || 0,
     resendAll: Boolean(jobConfig.resendAll),
     link: LINK,
+    siteLink: SITE_LINK,
     replyTo: REPLY_TO,
     from: FROM_EMAIL,
+    fromName: FROM_NAME,
   };
 }
 
@@ -112,26 +115,24 @@ function firstName(prenom, nom, email) {
 
 function buildMail(prenom, nom, email) {
   const who = firstName(prenom, nom, email);
-  const greeting = who ? `Salut ${who},` : 'Salut,';
-  const subject = who ? `${who}, c’est David` : 'C’est David';
+  const greeting = who ? `Bonjour ${who},` : 'Bonjour,';
+  // Sujet marque claire — évite « Prénom, c’est David » (pattern phishing → spam)
+  const subject = who ? `${who} — Boxing Center` : 'Boxing Center';
   const text = [
     greeting,
     '',
-    'C’est David, de Boxing Center.',
+    'David, de Boxing Center à Toulouse.',
     '',
-    'Je t’écris pour t’inviter à venir faire une séance dans n’importe lequel de nos clubs. Tu peux choisir un créneau ici :',
+    'Tu peux venir faire une séance dans l’un de nos clubs : Minimes, Ramonville, Saint-Cyprien, États-Unis ou Portet.',
     '',
+    'Réserver un créneau :',
     LINK,
     '',
-    'Le site du club :',
-    SITE_LINK,
+    'Tu peux aussi répondre à ce mail, je te réponds.',
     '',
-    'À bientôt,',
-    'David',
-    'Boxing Center',
-    '',
-    'Tu peux répondre à ce mail.',
-    'Pour ne plus recevoir ce type de message : réponds « stop ».',
+    'David de Boxing Center',
+    '2 rue du Languedoc, 31000 Toulouse',
+    'boxingcenter.fr',
   ].join('\n');
   return { subject, text, who };
 }
@@ -230,13 +231,14 @@ async function sendResend({ apiKey, to, subject, text }) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      from: `David <${FROM_EMAIL}>`,
+      from: `${FROM_NAME} <${FROM_EMAIL}>`,
       to: [to],
       subject,
       text,
       reply_to: REPLY_TO,
       headers: {
         'List-Unsubscribe': `<mailto:${UNSUBSCRIBE_EMAIL}?subject=Desinscription>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
       },
     }),
   });
@@ -473,6 +475,7 @@ async function sendTest({ resendApiKey, to, prenom, nom } = {}) {
     subject: mail.subject,
     text: mail.text,
     from: FROM_EMAIL,
+    fromName: FROM_NAME,
     replyTo: REPLY_TO,
     link: LINK,
     siteLink: SITE_LINK,
@@ -494,6 +497,7 @@ module.exports = {
     resolveSlice,
     sliceAudience,
     FROM_EMAIL,
+    FROM_NAME,
     REPLY_TO,
     LINK,
     SITE_LINK,

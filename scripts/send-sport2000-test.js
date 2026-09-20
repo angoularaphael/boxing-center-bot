@@ -51,7 +51,7 @@ async function main() {
     id: result.id,
     to,
     subject: result.subject,
-    from: `David <${result.from}>`,
+    from: `${result.fromName || 'David de Boxing Center'} <${result.from}>`,
     replyTo: result.replyTo,
     link: result.link,
   }, null, 2));
