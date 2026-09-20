@@ -92,7 +92,9 @@ async function mailTmJson(pathname, { method = 'GET', body, token } = {}) {
 
 async function createTempMailbox() {
   const domains = await mailTmJson('/domains');
-  const list = domains['hydra:member'] || [];
+  const list = Array.isArray(domains)
+    ? domains
+    : domains['hydra:member'] || domains['member'] || [];
   const active = list.find((d) => d.isActive) || list[0];
   if (!active?.domain) throw new Error('mail.tm: aucun domaine');
   const local = `bcw${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
