@@ -12,7 +12,7 @@ const { getSupabase } = require('./supabase');
 const CAMPAIGN = 'seance_offerte_email_sport2000_2026';
 const LINK = 'https://seance-offerte.boxingcenter.fr/?src=email';
 const SITE_LINK = 'https://boxingcenter.fr';
-const FROM_NAME = 'David de Boxing Center';
+const FROM_NAME = 'Boxing Center';
 const FROM_EMAIL = process.env.RESEND_SENDER_EMAIL || 'no-reply@boxingcenter.fr';
 const REPLY_TO = 'boxingcentertls@gmail.com';
 const UNSUBSCRIBE_EMAIL = process.env.RESEND_UNSUBSCRIBE_EMAIL || REPLY_TO;
@@ -113,28 +113,67 @@ function firstName(prenom, nom, email) {
   return '';
 }
 
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 function buildMail(prenom, nom, email) {
   const who = firstName(prenom, nom, email);
   const greeting = who ? `Bonjour ${who},` : 'Bonjour,';
-  // Sujet marque claire — évite « Prénom, c’est David » (pattern phishing → spam)
-  const subject = who ? `${who} — Boxing Center` : 'Boxing Center';
+  // Volontairement promo → onglet Promotions (pas spoof perso → spam)
+  const subject = who
+    ? `${who}, séance d’essai Boxing Center`
+    : 'Séance d’essai Boxing Center';
   const text = [
     greeting,
     '',
-    'David, de Boxing Center à Toulouse.',
+    'Boxing Center — clubs de boxe à Toulouse.',
     '',
-    'Tu peux venir faire une séance dans l’un de nos clubs : Minimes, Ramonville, Saint-Cyprien, États-Unis ou Portet.',
+    'On t’invite à une séance d’essai dans l’un de nos 5 clubs : Minimes, Ramonville, Saint-Cyprien, États-Unis ou Portet.',
     '',
-    'Réserver un créneau :',
-    LINK,
+    `Réserver : ${LINK}`,
     '',
-    'Tu peux aussi répondre à ce mail, je te réponds.',
+    `Site : ${SITE_LINK}`,
     '',
-    'David de Boxing Center',
+    'À bientôt,',
+    'L’équipe Boxing Center',
     '2 rue du Languedoc, 31000 Toulouse',
-    'boxingcenter.fr',
+    '',
+    `Désinscription : répondre « stop » ou écrire à ${UNSUBSCRIBE_EMAIL}`,
   ].join('\n');
-  return { subject, text, who };
+
+  const html = `<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,Helvetica,sans-serif;color:#111;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f4f4;padding:24px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e5e5e5;">
+        <tr><td style="padding:20px 24px;background:#111;color:#fff;font-size:18px;font-weight:bold;">Boxing Center</td></tr>
+        <tr><td style="padding:24px;font-size:16px;line-height:1.5;">
+          <p style="margin:0 0 16px;">${escapeHtml(greeting)}</p>
+          <p style="margin:0 0 16px;">On t’invite à une <strong>séance d’essai</strong> dans l’un de nos 5 clubs à Toulouse : Minimes, Ramonville, Saint-Cyprien, États-Unis ou Portet.</p>
+          <p style="margin:0 0 24px;">
+            <a href="${LINK}" style="display:inline-block;background:#e10600;color:#fff;text-decoration:none;padding:12px 20px;font-weight:bold;">Réserver ma séance</a>
+          </p>
+          <p style="margin:0 0 16px;font-size:14px;">Site : <a href="${SITE_LINK}" style="color:#111;">boxingcenter.fr</a></p>
+          <p style="margin:0;font-size:14px;color:#444;">L’équipe Boxing Center<br>2 rue du Languedoc, 31000 Toulouse</p>
+        </td></tr>
+        <tr><td style="padding:16px 24px;border-top:1px solid #eee;font-size:12px;color:#777;">
+          Tu reçois ce message de Boxing Center. Pour te désinscrire, réponds « stop » ou écris à
+          <a href="mailto:${UNSUBSCRIBE_EMAIL}?subject=Desinscription" style="color:#777;">${escapeHtml(UNSUBSCRIBE_EMAIL)}</a>.
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  return { subject, text, html, who };
 }
 
 function normalizeRecipients(raw) {
@@ -223,7 +262,7 @@ async function fetchSentEmails(sb) {
   return out;
 }
 
-async function sendResend({ apiKey, to, subject, text }) {
+async function sendResend({ apiKey, to, subject, text, html }) {
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
@@ -235,10 +274,12 @@ async function sendResend({ apiKey, to, subject, text }) {
       to: [to],
       subject,
       text,
+      html,
       reply_to: REPLY_TO,
       headers: {
         'List-Unsubscribe': `<mailto:${UNSUBSCRIBE_EMAIL}?subject=Desinscription>`,
         'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+        Precedence: 'bulk',
       },
     }),
   });
@@ -322,6 +363,7 @@ async function sendOne(sb, apiKey, client) {
         to: client.email,
         subject: mail.subject,
         text: mail.text,
+        html: mail.html,
       });
       await mark(sb, row.id, 'sent');
       return { ok: true, skipped: false };
@@ -468,12 +510,14 @@ async function sendTest({ resendApiKey, to, prenom, nom } = {}) {
     to: email,
     subject: mail.subject,
     text: mail.text,
+    html: mail.html,
   });
   return {
     ok: true,
     id,
     subject: mail.subject,
     text: mail.text,
+    html: mail.html,
     from: FROM_EMAIL,
     fromName: FROM_NAME,
     replyTo: REPLY_TO,
