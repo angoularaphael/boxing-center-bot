@@ -11,6 +11,7 @@ const { getSupabase } = require('./supabase');
 
 const CAMPAIGN = 'seance_offerte_email_sport2000_2026';
 const LINK = 'https://seance-offerte.boxingcenter.fr/?src=email';
+const SITE_LINK = 'https://boxingcenter.fr';
 const FROM_EMAIL = process.env.RESEND_SENDER_EMAIL || 'no-reply@boxingcenter.fr';
 const REPLY_TO = 'boxingcentertls@gmail.com';
 const UNSUBSCRIBE_EMAIL = process.env.RESEND_UNSUBSCRIBE_EMAIL || REPLY_TO;
@@ -121,6 +122,9 @@ function buildMail(prenom, nom, email) {
     'Je t’écris pour t’inviter à venir faire une séance dans n’importe lequel de nos clubs. Tu peux choisir un créneau ici :',
     '',
     LINK,
+    '',
+    'Le site du club :',
+    SITE_LINK,
     '',
     'À bientôt,',
     'David',
@@ -463,7 +467,16 @@ async function sendTest({ resendApiKey, to, prenom, nom } = {}) {
     subject: mail.subject,
     text: mail.text,
   });
-  return { ok: true, id, subject: mail.subject, text: mail.text, from: FROM_EMAIL, replyTo: REPLY_TO, link: LINK };
+  return {
+    ok: true,
+    id,
+    subject: mail.subject,
+    text: mail.text,
+    from: FROM_EMAIL,
+    replyTo: REPLY_TO,
+    link: LINK,
+    siteLink: SITE_LINK,
+  };
 }
 
 module.exports = {
@@ -473,6 +486,7 @@ module.exports = {
   sendTest,
   CAMPAIGN,
   LINK,
+  SITE_LINK,
   _test: {
     buildMail,
     sendResend,
@@ -482,6 +496,7 @@ module.exports = {
     FROM_EMAIL,
     REPLY_TO,
     LINK,
+    SITE_LINK,
     CAMPAIGN,
     DELAY_MS,
   },

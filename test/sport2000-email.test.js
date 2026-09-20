@@ -9,8 +9,10 @@ test('mail Sport2000 — texte soft + lien court + reply tls', () => {
   assert.equal(mail.subject, 'Raphael, c’est David');
   assert.match(mail.text, /n’importe lequel de nos clubs/);
   assert.match(mail.text, /seance-offerte\.boxingcenter\.fr\/\?src=email/);
+  assert.match(mail.text, /https:\/\/boxingcenter\.fr/);
   assert.doesNotMatch(mail.text, /10\s*€|valeur habituelle|séance offerte/i);
   assert.equal(campaign._test.LINK, 'https://seance-offerte.boxingcenter.fr/?src=email');
+  assert.equal(campaign._test.SITE_LINK, 'https://boxingcenter.fr');
   assert.equal(campaign._test.REPLY_TO, 'boxingcentertls@gmail.com');
   assert.equal(campaign._test.DELAY_MS, 3000);
 });
