@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * Test mail Sport2000 David → une adresse.
- *   node scripts/send-sport2000-test.js ymanga03@gmail.com Raphael
+ * Test paire Sport2000 (hi + David 7s) → une adresse.
+ *   node scripts/send-sport2000-test.js stariayanis422@gmail.com Yanis
  */
 
 const fs = require('fs');
@@ -33,30 +33,37 @@ loadEnvFile(path.join(ROOT, '.env'));
 loadEnvFile(path.join(ROOT, '..', 'BOXPLUS', '.env'));
 loadEnvFile(path.join(ROOT, '..', 'gestion-manager', '.env'));
 
-// Forcer Reply-To campagne même si .env a une autre valeur
-process.env.RESEND_REPLY_TO = 'boxingcentertls@gmail.com';
-
 const campaign = require('../seanceOfferteSport2000');
 
 async function main() {
-  const to = String(process.argv[2] || 'ymanga03@gmail.com').trim().toLowerCase();
-  const prenom = String(process.argv[3] || 'Raphael').trim();
+  const to = String(process.argv[2] || 'stariayanis422@gmail.com').trim().toLowerCase();
+  const prenom = String(process.argv[3] || 'Yanis').trim();
+  console.log(`Envoi paire → ${to} (gap ${campaign._test.PAIR_GAP_MS}ms, from David <${campaign._test.FROM_EMAIL}>)…`);
   const result = await campaign.sendTest({ to, prenom });
   if (!result.ok) {
     console.error('FAIL', result.error);
     process.exit(1);
   }
-  console.log(JSON.stringify({
-    ok: true,
-    id: result.id,
-    to,
-    subject: result.subject,
-    from: `${result.fromName || 'Boxing Center'} <${result.from}>`,
-    replyTo: result.replyTo,
-    link: result.link,
-  }, null, 2));
-  console.log('--- BODY ---');
-  console.log(result.text);
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        idHi: result.idHi,
+        idDavid: result.idDavid,
+        to,
+        subject: result.subject,
+        from: `${result.fromName} <${result.from}>`,
+        replyTo: result.replyTo,
+        pairGapMs: result.pairGapMs,
+      },
+      null,
+      2
+    )
+  );
+  console.log('--- MAIL 1 ---');
+  console.log(result.textHi);
+  console.log('--- MAIL 2 ---');
+  console.log(result.textDavid);
 }
 
 main().catch((err) => {

@@ -2633,7 +2633,7 @@ app.post('/api/campaign/sport2000-email', (req, res) => {
     res.json({
         success: true,
         accepted: true,
-        note: 'Sport2000 — texte David, reply boxingcentertls, lien ?src=email, délai 3s.',
+        note: 'Sport2000 — 2 mails (hi + David 7s) via david@, reply boxingcentertls.',
         ...started,
     });
 });
