@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const campaign = require('../seanceOfferteSport2000');
 
-test('mail Sport2000 — 1 seul message David depuis david@', () => {
+test('mail Sport2000 — 1 message David depuis no-reply@', () => {
   const mail = campaign._test.buildMail('Jeremy', '', 'jeremyfidge@gmail.com');
   assert.equal(mail.subject, 'Salut Jeremy');
   assert.match(mail.text, /C’est David du Boxing Center/);
