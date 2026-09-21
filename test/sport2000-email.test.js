@@ -8,6 +8,8 @@ test('mail Sport2000 — 1 seul message David depuis david@', () => {
   const mail = campaign._test.buildMail('Jeremy', '', 'jeremyfidge@gmail.com');
   assert.equal(mail.subject, 'Salut Jeremy');
   assert.match(mail.text, /C’est David du Boxing Center/);
+  assert.match(mail.text, /jamais fait de boxe|débutant/i);
+  assert.match(mail.text, /pas besoin d’expérience|matériel/i);
   assert.match(mail.text, /seance-offerte\.boxingcenter\.fr/);
   assert.match(mail.text, /boxingcenter\.fr/);
   assert.doesNotMatch(mail.text, /Comment tu vas|Languedoc|31000/i);
