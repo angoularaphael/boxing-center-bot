@@ -1,19 +1,19 @@
 'use strict';
 
 /**
- * Campagne Sport2000 — 1 mail David via david@boxingcenter.fr.
- * Audience fichier JSON. Objectif Principale / Promotions.
+ * Campagne Sport2000 — 1 mail David via no-reply@boxingcenter.fr.
+ * Audience fichier JSON. Objectif Principale / Promotions (pas david@ → spam).
  */
 
 const fs = require('fs');
 const path = require('path');
 const { getSupabase } = require('./supabase');
 
-const CAMPAIGN = 'sport2000_david_2026';
+const CAMPAIGN = 'sport2000_noreply_2026';
 const LINK = 'https://seance-offerte.boxingcenter.fr/?src=email';
 const SITE_LINK = 'https://boxingcenter.fr';
 const FROM_NAME = 'David';
-const FROM_EMAIL = 'david@boxingcenter.fr';
+const FROM_EMAIL = 'no-reply@boxingcenter.fr';
 const REPLY_TO = 'boxingcentertls@gmail.com';
 const UNSUBSCRIBE_EMAIL = process.env.RESEND_UNSUBSCRIBE_EMAIL || REPLY_TO;
 const DELAY_MS = Math.max(800, parseInt(process.env.SPORT2000_EMAIL_DELAY_MS || '3000', 10) || 3000);

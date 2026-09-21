@@ -13,8 +13,9 @@ test('mail Sport2000 — 1 seul message David depuis david@', () => {
   assert.match(mail.text, /seance-offerte\.boxingcenter\.fr/);
   assert.match(mail.text, /boxingcenter\.fr/);
   assert.doesNotMatch(mail.text, /Comment tu vas|Languedoc|31000/i);
-  assert.equal(campaign._test.FROM_EMAIL, 'david@boxingcenter.fr');
+  assert.equal(campaign._test.FROM_EMAIL, 'no-reply@boxingcenter.fr');
   assert.equal(campaign._test.FROM_NAME, 'David');
+  assert.equal(campaign._test.CAMPAIGN, 'sport2000_noreply_2026');
   assert.equal(typeof campaign._test.buildHiMail, 'undefined');
 });
 
