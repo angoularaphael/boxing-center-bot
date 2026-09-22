@@ -18,5 +18,6 @@ test('lien seance offerte — src email vs sms', () => {
 test('SMS Sport2000 — lien court /s (tracking sms cote site)', () => {
   const sms = sport2000SmsTemplate();
   assert.match(sms, /seance-offerte\.boxingcenter\.fr\/s/);
+  assert.match(sms, /Sport2000/);
   assert.doesNotMatch(sms, /\?src=email/);
 });
