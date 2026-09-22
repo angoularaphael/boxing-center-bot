@@ -8,10 +8,10 @@
 const fs = require('fs');
 const path = require('path');
 const { getSupabase } = require('./supabase');
+const { SITE_LINK, seanceOfferteLink } = require('./lib/sport2000-seance-offerte');
 
 const CAMPAIGN = 'sport2000_noreply_2026';
-const LINK = 'https://seance-offerte.boxingcenter.fr/?src=email';
-const SITE_LINK = 'https://boxingcenter.fr';
+const LINK = seanceOfferteLink('email');
 const FROM_NAME = 'David';
 const FROM_EMAIL = 'no-reply@boxingcenter.fr';
 const REPLY_TO = 'boxingcentertls@gmail.com';
