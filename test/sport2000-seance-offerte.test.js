@@ -15,8 +15,8 @@ test('lien seance offerte — src email vs sms', () => {
   assert.equal(seanceOfferteLink('sms'), 'https://seance-offerte.boxingcenter.fr/?src=sms');
 });
 
-test('SMS Sport2000 partage la meme URL que le mail, src=sms', () => {
+test('SMS Sport2000 — lien court /s (tracking sms cote site)', () => {
   const sms = sport2000SmsTemplate();
-  assert.match(sms, /\?src=sms/);
+  assert.match(sms, /seance-offerte\.boxingcenter\.fr\/s/);
   assert.doesNotMatch(sms, /\?src=email/);
 });
