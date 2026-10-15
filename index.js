@@ -54,7 +54,11 @@ const {
     updateOutboundMessage,
     markOutboundWhatsAppRead,
     wasCampaignSentToRecipient,
+    insertManagerRow,
+    insertPromoteurRow,
+    purgeManagersAndPromoteurs,
 } = require('./supabase');
+const { buildContactRow, parseSaveTargets, contactDisplayName } = require('./lib/contactImport');
 const { sendBrevoEmail, verifyEmailSetup } = require('./email');
 const {
     getGroupeChabaneContacts,
@@ -303,12 +307,15 @@ const BOT_COMMANDS = new Set([
     '.authorise', '.authorize', '.autorise',
     '.unauthorise', '.unauthorize', '.unautorise',
     '.contacts-csv', '.contactscsv', '.export-contacts',
+    '.savecontacts', '.savecontact',
+    '.purge',
     '.groupe-chabane-numeros', '.groupe-chabane-phones',
     '.prt',
 ]);
 
 function isKnownBotCommand(cleanText, cmd) {
     if (BOT_COMMANDS.has(cmd)) return true;
+    if (cleanText.startsWith('.savecontacts') || cleanText.startsWith('.savecontact')) return true;
     return ['.authorise', '.authorize', '.autorise', '.unauthorise', '.unauthorize', '.unautorise'].some(
         (p) => cleanText.startsWith(p)
     );
@@ -345,7 +352,9 @@ function getMenuText() {
         '`.groupe-chabane-numeros`',
         '',
         '*Outils*',
+        '`.savecontacts` — Enregistrer contacts (managers + promoteurs)',
         '`.contacts-csv` — CSV depuis contacts (répondre au message)',
+        '`.purge` — Vider managers et promoteurs (hors test)',
         '`.prt` — Quitter le groupe (à taper dans le groupe)',
         '',
         '*Tests & admin*',
@@ -390,7 +399,9 @@ function getGuideText() {
         '• `.groupe-chabane-numeros` — Contacts du Groupe Chabane',
         '',
         '*Outils*',
+        '• `.savecontacts` — Répondre à un message de contacts : enregistrement Supabase (managers + promoteurs par défaut ; `manager` ou `promoteur` en option)',
         '• `.contacts-csv` — Répondre à un message contenant des contacts pour recevoir un CSV',
+        '• `.purge` — Supprimer tous les managers et promoteurs (fiches test conservées)',
         '• `.prt` — Faire quitter le bot du groupe (admin uniquement, dans le groupe)',
         '',
         '*Tests & admin*',
@@ -461,13 +472,20 @@ async function runTestEnvoi() {
     const subject = 'Boxing Center';
     const message = 'Message de Boxing Center — merci de confirmer la bonne réception de ce message.';
 
-    const results = { whatsapp: '—', email: '—' };
+    const results = { whatsapp: '—', email: '—', sms: '—' };
 
     try {
         await sendWhatsAppMessage(phone, message, managerId);
-        results.whatsapp = `✅ +${phone}`;
+        results.whatsapp = `OK +${phone}`;
     } catch (err) {
-        results.whatsapp = `❌ ${err.message}`;
+        results.whatsapp = `erreur: ${err.message}`;
+    }
+
+    try {
+        await sendSmsMessage(phone, message, managerId);
+        results.sms = `OK +${phone}`;
+    } catch (err) {
+        results.sms = `erreur: ${err.message}`;
     }
 
     try {
@@ -480,9 +498,9 @@ async function runTestEnvoi() {
             managerId,
             recipientName: name,
         });
-        results.email = `✅ ${email}`;
+        results.email = `OK ${email}`;
     } catch (err) {
-        results.email = `❌ ${err.message}`;
+        results.email = `erreur: ${err.message}`;
     }
 
     return { results, phone, email, name };
@@ -622,6 +640,9 @@ async function sendWhatsAppMessage(
     clientId = null,
     campaign = null
 ) {
+    if (!isConnected || !sock) {
+        throw new Error('WhatsApp non connecté');
+    }
     const cleanNumber = toWhatsAppDigits(phone);
     if (!isValidPhoneDigits(cleanNumber)) {
         throw new Error(`Numéro invalide : ${phone}`);
@@ -638,22 +659,32 @@ async function sendWhatsAppMessage(
         client_id: clientId || null,
         campaign: campaign || null,
         bot_instance: BOT_INSTANCE_ID,
-        channel: 'sms',
+        channel: 'whatsapp',
         recipient: cleanNumber,
         subject: null,
         body: fullMessage,
         status: 'pending',
     });
     try {
-        const { sendSmsGatewayMessage } = require('./lib/smsGateway');
-        const sent = await sendSmsGatewayMessage(cleanNumber, fullMessage, { source: BOT_INSTANCE_ID || 'boxing-center-bot' });
+        const jid = `${cleanNumber}@s.whatsapp.net`;
+        const logo = await getMenuLogoBuffer();
+        let waMessageId = null;
+        if (logo && fullMessage.length <= WA_CAPTION_MAX) {
+            const sent = await sock.sendMessage(jid, { image: logo, caption: fullMessage });
+            waMessageId = sent?.key?.id || null;
+        } else if (fullMessage.length <= WA_MAX_LEN) {
+            const sent = await sock.sendMessage(jid, { text: fullMessage });
+            waMessageId = sent?.key?.id || null;
+        } else {
+            await sendLongMessage(jid, fullMessage);
+        }
         await updateOutboundMessage(record.id, {
             status: 'sent',
             sent_at: new Date().toISOString(),
-            wa_message_id: sent.recipientId || null,
+            wa_message_id: waMessageId,
         });
-        console.log(`[BOT] SMS envoyé → +${cleanNumber}${campaign ? ` (${campaign})` : ''}`);
-        return { success: true, id: record.id, phone: cleanNumber, via: 'sms', recipientId: sent.recipientId };
+        console.log(`[BOT] WhatsApp envoyé → +${cleanNumber}${campaign ? ` (${campaign})` : ''}`);
+        return { success: true, id: record.id, phone: cleanNumber, waMessageId };
     } catch (err) {
         await updateOutboundMessage(record.id, {
             status: 'failed',
@@ -661,6 +692,102 @@ async function sendWhatsAppMessage(
         });
         throw err;
     }
+}
+
+async function sendSmsMessage(
+    phone,
+    message,
+    managerId = null,
+    promoterId = null,
+    boxeurId = null,
+    clientId = null,
+    campaign = null
+) {
+    const cleanNumber = toWhatsAppDigits(phone);
+    if (!isValidPhoneDigits(cleanNumber)) {
+        throw new Error(`Numéro invalide : ${phone}`);
+    }
+    const { sendSmsGatewayMessage, toGsmSafe } = require('./lib/smsGateway');
+    const smsBody = toGsmSafe(message);
+    let record = null;
+    try {
+        record = await createOutboundMessage({
+            manager_id: (promoterId || boxeurId || clientId) ? null : managerId,
+            promoter_id: promoterId || null,
+            boxeur_id: boxeurId || null,
+            client_id: clientId || null,
+            campaign: campaign || null,
+            bot_instance: BOT_INSTANCE_ID,
+            channel: 'sms',
+            recipient: cleanNumber,
+            subject: null,
+            body: smsBody,
+            status: 'pending',
+        });
+    } catch (logErr) {
+        console.warn('[BOT] Journal SMS outbound:', logErr.message);
+    }
+    try {
+        const sent = await sendSmsGatewayMessage(cleanNumber, smsBody, {
+            source: BOT_INSTANCE_ID || 'boxing-center-bot',
+        });
+        if (record?.id) {
+            await updateOutboundMessage(record.id, {
+                status: 'sent',
+                sent_at: new Date().toISOString(),
+                wa_message_id: sent.recipientId || null,
+            });
+        }
+        console.log(`[BOT] SMS envoyé → +${cleanNumber}${campaign ? ` (${campaign})` : ''}`);
+        return { success: true, id: record?.id, phone: cleanNumber, via: 'sms', recipientId: sent.recipientId };
+    } catch (err) {
+        if (record?.id) {
+            await updateOutboundMessage(record.id, {
+                status: 'failed',
+                error: err.message,
+            });
+        }
+        throw err;
+    }
+}
+
+async function importContactsToDb(contacts, text) {
+    const targets = parseSaveTargets(text);
+    const summary = {
+        managers: { inserted: 0, skipped: 0, errors: 0 },
+        promoteurs: { inserted: 0, skipped: 0, errors: 0 },
+    };
+
+    for (const raw of contacts) {
+        const nom = contactDisplayName(raw);
+        let row;
+        try {
+            row = buildContactRow({ nom, telephone: raw.telephone, email: raw.email });
+        } catch {
+            continue;
+        }
+        if (!row.has_phone && !row.has_email) continue;
+
+        if (targets.managers) {
+            try {
+                const out = await insertManagerRow(row);
+                if (out.inserted) summary.managers.inserted++;
+                else summary.managers.skipped++;
+            } catch {
+                summary.managers.errors++;
+            }
+        }
+        if (targets.promoteurs) {
+            try {
+                const out = await insertPromoteurRow(row);
+                if (out.inserted) summary.promoteurs.inserted++;
+                else summary.promoteurs.skipped++;
+            } catch {
+                summary.promoteurs.errors++;
+            }
+        }
+    }
+    return { targets, summary };
 }
 
 async function handleWhatsAppReadReceipts(updates) {
@@ -784,8 +911,9 @@ async function handleIncomingMessages(m) {
                         `🧪 *Test envoi — ${getTestContactLabel()}*`,
                         '',
                         `👤 ${name}`,
-                        `📱 WhatsApp +${phone} : ${results.whatsapp}`,
-                        `✉️ Email ${email} : ${results.email}`,
+                        `WhatsApp +${phone} : ${results.whatsapp}`,
+                        `SMS +${phone} : ${results.sms}`,
+                        `Email ${email} : ${results.email}`,
                     ].join('\n'),
                 });
             } else if (cmd === '.authorise' || cleanText.startsWith('.authorize') || cleanText.startsWith('.autorise')) {
@@ -825,6 +953,51 @@ async function handleIncomingMessages(m) {
                     text: `👋 Le bot quitte *${groupName}*…`,
                 });
                 await sock.groupLeave(sender);
+            } else if (cmd === '.purge') {
+                const counts = await purgeManagersAndPromoteurs({ keepTest: true });
+                await sock.sendMessage(sender, {
+                    text: [
+                        'Purge terminee.',
+                        `Managers supprimes : ${counts.managersDeleted}`,
+                        `Promoteurs supprimes : ${counts.promoteursDeleted}`,
+                        'Les fiches is_test sont conservees.',
+                    ].join('\n'),
+                });
+            } else if (
+                cmd === '.savecontacts' ||
+                cmd === '.savecontact' ||
+                cleanText.startsWith('.savecontacts') ||
+                cleanText.startsWith('.savecontact')
+            ) {
+                const contacts = extractContactsFromIncomingMessage(msg, { preferQuoted: true });
+                if (!contacts.length) {
+                    await sock.sendMessage(sender, {
+                        text: [
+                            'Aucun contact trouve.',
+                            '',
+                            'Repondez a un message contenant des contacts WhatsApp, puis tapez `.savecontacts`.',
+                            'Option : `.savecontacts manager` ou `.savecontacts promoteur` (sinon les deux).',
+                        ].join('\n'),
+                    });
+                    continue;
+                }
+                const { targets, summary } = await importContactsToDb(contacts, text);
+                const lines = [
+                    'Enregistrement Supabase',
+                    `Contacts lus : ${contacts.length}`,
+                    '',
+                ];
+                if (targets.managers) {
+                    lines.push(
+                        `Managers : ${summary.managers.inserted} ajoute(s), ${summary.managers.skipped} deja la, ${summary.managers.errors} erreur(s)`
+                    );
+                }
+                if (targets.promoteurs) {
+                    lines.push(
+                        `Promoteurs : ${summary.promoteurs.inserted} ajoute(s), ${summary.promoteurs.skipped} deja la, ${summary.promoteurs.errors} erreur(s)`
+                    );
+                }
+                await sock.sendMessage(sender, { text: lines.join('\n') });
             } else if (
                 cmd === '.contacts-csv' ||
                 cmd === '.contactscsv' ||
@@ -1376,6 +1549,27 @@ async function deliverToManager(mgr, { message, subject, html, channels, results
         })());
     }
 
+    if (channels.includes('sms')) {
+        tasks.push((async () => {
+            if (!mgr.telephone) {
+                results.sms.skipped++;
+                return;
+            }
+            try {
+                await sendSmsMessage(mgr.telephone, message, mgr.id);
+                results.sms.sent++;
+                results.destinations.push({
+                    channel: 'sms',
+                    to: `+${normalizePhone(mgr.telephone)}`,
+                    manager: mgr.nom,
+                });
+            } catch (err) {
+                results.sms.failed++;
+                results.errors.push({ manager: mgr.nom, channel: 'sms', error: err.message });
+            }
+        })());
+    }
+
     await Promise.all(tasks);
 }
 
@@ -1567,6 +1761,7 @@ async function deliverManagersBatch(managers, { message, subject, html, channels
     const results = {
         whatsapp: { sent: 0, failed: 0, skipped: 0 },
         email: { sent: 0, failed: 0, skipped: 0 },
+        sms: { sent: 0, failed: 0, skipped: 0 },
         errors: [],
         destinations: [],
         warnings: [],
@@ -2098,6 +2293,27 @@ async function deliverToPromoteur(prom, { message, subject, html, channels, resu
         })());
     }
 
+    if (channels.includes('sms')) {
+        tasks.push((async () => {
+            if (!prom.telephone) {
+                results.sms.skipped++;
+                return;
+            }
+            try {
+                await sendSmsMessage(prom.telephone, message, null, prom.id);
+                results.sms.sent++;
+                results.destinations.push({
+                    channel: 'sms',
+                    to: `+${normalizePhone(prom.telephone)}`,
+                    promoter: prom.nom,
+                });
+            } catch (err) {
+                results.sms.failed++;
+                results.errors.push({ promoter: prom.nom, channel: 'sms', error: err.message });
+            }
+        })());
+    }
+
     await Promise.all(tasks);
 }
 
@@ -2162,6 +2378,7 @@ app.post('/api/send-to-promoteurs', async (req, res) => {
         const results = {
             whatsapp: { sent: 0, failed: 0, skipped: 0 },
             email: { sent: 0, failed: 0, skipped: 0 },
+            sms: { sent: 0, failed: 0, skipped: 0 },
             errors: [],
             destinations: [],
             warnings: [],

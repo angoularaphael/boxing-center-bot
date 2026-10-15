@@ -440,6 +440,47 @@ async function markOutboundWhatsAppRead(waMessageId) {
     return data;
 }
 
+async function insertManagerRow(row) {
+    const sb = getSupabase();
+    const { data, error } = await sb.from('managers').insert(row).select().single();
+    if (error) {
+        if (error.code === '23505' || /duplicate|unique/i.test(error.message || '')) {
+            return { skipped: true, reason: 'duplicate' };
+        }
+        throw error;
+    }
+    return { inserted: true, data };
+}
+
+async function insertPromoteurRow(row) {
+    const sb = getSupabase();
+    const { data, error } = await sb.from('promoteurs').insert(row).select().single();
+    if (error) {
+        if (error.code === '23505' || /duplicate|unique/i.test(error.message || '')) {
+            return { skipped: true, reason: 'duplicate' };
+        }
+        throw error;
+    }
+    return { inserted: true, data };
+}
+
+async function purgeManagersAndPromoteurs({ keepTest = true } = {}) {
+    const sb = getSupabase();
+    let mq = sb.from('managers').delete({ count: 'exact' });
+    let pq = sb.from('promoteurs').delete({ count: 'exact' });
+    if (keepTest) {
+        mq = mq.eq('is_test', false);
+        pq = pq.eq('is_test', false);
+    }
+    const [mRes, pRes] = await Promise.all([mq, pq]);
+    if (mRes.error) throw mRes.error;
+    if (pRes.error) throw pRes.error;
+    return {
+        managersDeleted: mRes.count ?? 0,
+        promoteursDeleted: pRes.count ?? 0,
+    };
+}
+
 module.exports = {
     getSupabase,
     fetchAllPaginated,
@@ -477,4 +518,7 @@ module.exports = {
     updateOutboundMessage,
     markOutboundWhatsAppRead,
     wasCampaignSentToRecipient,
+    insertManagerRow,
+    insertPromoteurRow,
+    purgeManagersAndPromoteurs,
 };
