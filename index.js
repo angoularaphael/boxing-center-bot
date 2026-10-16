@@ -59,6 +59,7 @@ const {
     purgeManagersAndPromoteurs,
 } = require('./supabase');
 const { buildContactRow, parseSaveTargets, contactDisplayName } = require('./lib/contactImport');
+const { botPublicUrl, botDisplayName } = require('./lib/serverConfig');
 const { sendBrevoEmail, verifyEmailSetup } = require('./email');
 const {
     getGroupeChabaneContacts,
@@ -2611,10 +2612,10 @@ app.post('/api/send-to-groupe-chabane', async (req, res) => {
 const PORT = process.env.PORT || process.env.SERVER_PORT || 3002;
 
 function logBotUrlForVercel(port) {
-    const botUrl = `http://us2.bot-hosting.net:${port}`;
-    console.log('\n🌍 ==================================================');
-    console.log('🌍 URL BOT pour Vercel (NEXT_PUBLIC_WHATSAPP_BOT_URL) :');
-    console.log(`🌍   ${botUrl}`);
+    const botUrl = botPublicUrl();
+    console.log('\n[BC-Manager-Hub] ======================================');
+    console.log(`[${botDisplayName()}] NEXT_PUBLIC_WHATSAPP_BOT_URL :`);
+    console.log(`  ${botUrl}`);
     try {
         const https = require('https');
         https
@@ -2624,15 +2625,15 @@ function logBotUrlForVercel(port) {
                     data += c;
                 });
                 res.on('end', () => {
-                    console.log(`🌍   (IP : http://${data.trim()}:${port})`);
-                    console.log('🌍 ==================================================\n');
+                    console.log(`  (IP directe : http://${data.trim()}:${port})`);
+                    console.log('[BC-Manager-Hub] ======================================\n');
                 });
             })
             .on('error', () => {
-                console.log('🌍 ==================================================\n');
+                console.log('[BC-Manager-Hub] ======================================\n');
             });
     } catch {
-        console.log('🌍 ==================================================\n');
+        console.log('[BC-Manager-Hub] ======================================\n');
     }
 }
 

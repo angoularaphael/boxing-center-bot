@@ -5,10 +5,16 @@ Bot WhatsApp + API (modèle **NYC Cookies**) avec **Brevo** pour les emails.
 Le site admin est sur [gestion-manager](https://github.com/angoularaphael/gestion-manager) (Vercel).  
 Ce dépôt = **bot uniquement** (Bothosting / VPS).
 
+Hub production : **BC-Manager-Hub** — `http://prem-eu4.bot-hosting.net:21357`  
+Guide complet : `DEPLOY-BC-MANAGER-HUB.md`
+
 ## Variables `.env`
 
 ```env
-PORT=3002
+PORT=21357
+SERVER_PORT=21357
+BOT_PUBLIC_HOST=prem-eu4.bot-hosting.net
+BOT_DISPLAY_NAME=BC-Manager-Hub
 SITE_API_SECRET=meme_secret_que_vercel
 NEXT_PUBLIC_SITE_URL=https://votre-app.vercel.app
 

@@ -40,7 +40,7 @@ function resolveBotPort() {
     if (port && /^\d+$/.test(port)) return port;
     console.error(
         '❌ SERVER_PORT ou PORT manquant — ajoutez-le dans .env à côté de index.js ' +
-            '(ex. 21334 Minimes, 20405 Saint-Cyprien, 21357 Ramonville).'
+            '(hub managers : 21357 prem-eu4 — BC-Manager-Hub).'
     );
     process.exit(1);
 }
@@ -52,7 +52,11 @@ const ENV_KEYS = [
     'PORT',
     'SERVER_PORT',
     'BOT_INSTANCE_ID',
+    'BOT_DISPLAY_NAME',
     'BOT_PUBLIC_HOST',
+    'BOT_PUBLIC_URL',
+    'SMS_GATEWAY_URL',
+    'SMS_GATEWAY_SECRET',
     'SITE_API_SECRET',
     'NEXT_PUBLIC_SITE_URL',
     'SUPABASE_URL',

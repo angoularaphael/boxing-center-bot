@@ -13,10 +13,12 @@ const BOXING_CENTER_CONTACT_EMAIL = (
     'boxingcenter31@gmail.com'
 ).trim();
 
+const { botPublicUrl } = require('./lib/serverConfig');
+
 const BOT_PUBLIC_URL = (
     process.env.BOT_PUBLIC_URL ||
     process.env.NEXT_PUBLIC_WHATSAPP_BOT_URL ||
-    'http://us2.bot-hosting.net:20042'
+    botPublicUrl()
 ).replace(/\/$/, '');
 
 const BOXING_CENTER_LOGO_URL =
