@@ -1493,9 +1493,10 @@ app.post('/api/send-email', async (req, res) => {
     }
 });
 
-async function deliverToManager(mgr, { message, subject, html, channels, results, whatsapp_campaign }) {
+async function deliverToManager(mgr, { message, subject, html, channels, results, whatsapp_campaign, testOnly }) {
     const mailSubject = subject || 'Message Boxing Center';
     const waBody = personalizeOutboundMessage(message, mgr.nom);
+    const waCampaign = testOnly ? null : whatsapp_campaign || null;
     const tasks = [];
 
     if (channels.includes('whatsapp')) {
@@ -1512,7 +1513,7 @@ async function deliverToManager(mgr, { message, subject, html, channels, results
                     null,
                     null,
                     null,
-                    whatsapp_campaign || null
+                    waCampaign
                 );
                 if (sent.skipped) {
                     if (sent.duplicate) {
@@ -1738,6 +1739,7 @@ function bulkSendDedupKey(scope, body) {
         broadcast: body.broadcast || '',
         ids: [...ids].sort().join(','),
         channels: [...(body.channels || [])].sort().join(','),
+        campaign: body.whatsapp_campaign || '',
         msg: String(body.message || '').slice(0, 400),
     };
     return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
@@ -1786,7 +1788,7 @@ async function deliverManagersBatch(managers, { message, subject, html, channels
         destinations: [],
         warnings: [],
     };
-    const ctx = { message, subject, html, channels, results, whatsapp_campaign };
+    const ctx = { message, subject, html, channels, results, whatsapp_campaign, testOnly };
     await runBulkDelivery(managers, deliverToManager, ctx, { testOnly });
     return results;
 }
@@ -2258,9 +2260,10 @@ app.post('/api/send-to-clients', async (req, res) => {
     }
 });
 
-async function deliverToPromoteur(prom, { message, subject, html, channels, results, whatsapp_campaign }) {
+async function deliverToPromoteur(prom, { message, subject, html, channels, results, whatsapp_campaign, testOnly }) {
     const mailSubject = subject || 'Message Boxing Center';
     const waBody = personalizeOutboundMessage(message, prom.nom);
+    const waCampaign = testOnly ? null : whatsapp_campaign || null;
     const tasks = [];
 
     if (channels.includes('whatsapp')) {
@@ -2277,7 +2280,7 @@ async function deliverToPromoteur(prom, { message, subject, html, channels, resu
                     prom.id,
                     null,
                     null,
-                    whatsapp_campaign || null
+                    waCampaign
                 );
                 if (sent.skipped) {
                     if (sent.duplicate) {
@@ -2366,7 +2369,7 @@ async function deliverPromoteursBatch(promoteurs, { message, subject, html, chan
         destinations: [],
         warnings: [],
     };
-    const ctx = { message, subject, html, channels, results, whatsapp_campaign };
+    const ctx = { message, subject, html, channels, results, whatsapp_campaign, testOnly };
     await runBulkDelivery(promoteurs, deliverToPromoteur, ctx, { testOnly });
     return results;
 }
@@ -2446,17 +2449,45 @@ app.post('/api/send-to-promoteurs', async (req, res) => {
             return res.status(400).json({ error: 'Aucun promoteur trouvé pour cet envoi' });
         }
 
-        const results = {
-            whatsapp: { sent: 0, failed: 0, skipped: 0 },
-            email: { sent: 0, failed: 0, skipped: 0 },
-            sms: { sent: 0, failed: 0, skipped: 0 },
-            errors: [],
-            destinations: [],
-            warnings: [],
-        };
+        const waTargets = channels.includes('whatsapp')
+            ? promoteurs.filter((p) => p.telephone).length
+            : 0;
+        const runInBackground = channels.includes('whatsapp') && waTargets > 1 && !testOnly;
 
-        const ctx = { message, subject, html, channels, results };
-        await runBulkDelivery(promoteurs, deliverToPromoteur, ctx, { testOnly });
+        if (runInBackground) {
+            res.json({
+                success: true,
+                accepted: true,
+                promoteurs: promoteurs.length,
+                whatsapp: { sent: 0, queued: waTargets, failed: 0, skipped: promoteurs.length - waTargets, duplicates: 0 },
+                email: { sent: 0, failed: 0, skipped: 0 },
+                errors: [],
+                destinations: [],
+                warnings: [
+                    `Envoi WhatsApp démarré pour ${waTargets} numéro(s) — espacement automatique entre chaque message.`,
+                ],
+            });
+            setImmediate(() => {
+                deliverPromoteursBatch(promoteurs, {
+                    message,
+                    subject,
+                    html,
+                    channels,
+                    testOnly,
+                    whatsapp_campaign: whatsappCampaign,
+                }).catch((err) => console.error('[send-to-promoteurs] background:', err.message));
+            });
+            return;
+        }
+
+        const results = await deliverPromoteursBatch(promoteurs, {
+            message,
+            subject,
+            html,
+            channels,
+            testOnly,
+            whatsapp_campaign: whatsappCampaign,
+        });
 
         res.json({ success: true, promoteurs: promoteurs.length, ...results });
     } catch (err) {
