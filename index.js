@@ -1493,8 +1493,9 @@ app.post('/api/send-email', async (req, res) => {
     }
 });
 
-async function deliverToManager(mgr, { message, subject, html, channels, results }) {
+async function deliverToManager(mgr, { message, subject, html, channels, results, whatsapp_campaign }) {
     const mailSubject = subject || 'Message Boxing Center';
+    const waBody = personalizeOutboundMessage(message, mgr.nom);
     const tasks = [];
 
     if (channels.includes('whatsapp')) {
@@ -1504,7 +1505,23 @@ async function deliverToManager(mgr, { message, subject, html, channels, results
                 return;
             }
             try {
-                await sendWhatsAppMessage(mgr.telephone, message, mgr.id);
+                const sent = await sendWhatsAppMessage(
+                    mgr.telephone,
+                    waBody,
+                    mgr.id,
+                    null,
+                    null,
+                    null,
+                    whatsapp_campaign || null
+                );
+                if (sent.skipped) {
+                    if (sent.duplicate) {
+                        results.whatsapp.duplicates = (results.whatsapp.duplicates || 0) + 1;
+                    } else {
+                        results.whatsapp.skipped++;
+                    }
+                    return;
+                }
                 results.whatsapp.sent++;
                 results.destinations.push({
                     channel: 'whatsapp',
@@ -1558,7 +1575,7 @@ async function deliverToManager(mgr, { message, subject, html, channels, results
                 return;
             }
             try {
-                await sendSmsMessage(mgr.telephone, message, mgr.id);
+                await sendSmsMessage(mgr.telephone, waBody, mgr.id);
                 results.sms.sent++;
                 results.destinations.push({
                     channel: 'sms',
@@ -1577,6 +1594,7 @@ async function deliverToManager(mgr, { message, subject, html, channels, results
 
 const { pickRandomOffreEteWhatsAppMessage } = require('./offreEteWhatsAppCampaign');
 const { pickCampaignWhatsApp } = require('./campaignTemplates');
+const { personalizeOutboundMessage } = require('./lib/messagePersonalize');
 const RECENT_BULK_SENDS = new Map();
 const BULK_SEND_DEDUP_MS = 15 * 60 * 1000;
 
@@ -1759,16 +1777,16 @@ async function resolveManagersForSend({ managerIds, testOnly, broadcast }) {
     return null;
 }
 
-async function deliverManagersBatch(managers, { message, subject, html, channels, testOnly }) {
+async function deliverManagersBatch(managers, { message, subject, html, channels, testOnly, whatsapp_campaign }) {
     const results = {
-        whatsapp: { sent: 0, failed: 0, skipped: 0 },
+        whatsapp: { sent: 0, failed: 0, skipped: 0, duplicates: 0 },
         email: { sent: 0, failed: 0, skipped: 0 },
         sms: { sent: 0, failed: 0, skipped: 0 },
         errors: [],
         destinations: [],
         warnings: [],
     };
-    const ctx = { message, subject, html, channels, results };
+    const ctx = { message, subject, html, channels, results, whatsapp_campaign };
     await runBulkDelivery(managers, deliverToManager, ctx, { testOnly });
     return results;
 }
@@ -1783,6 +1801,7 @@ app.post('/api/send-to-managers', async (req, res) => {
         channels = ['whatsapp'],
         test_only: testOnly,
         broadcast,
+        whatsapp_campaign: whatsappCampaign,
     } = req.body;
 
     if (!message) return res.status(400).json({ error: 'message required' });
@@ -1847,6 +1866,7 @@ app.post('/api/send-to-managers', async (req, res) => {
                     html,
                     channels,
                     testOnly,
+                    whatsapp_campaign: whatsappCampaign,
                 }).catch((err) => console.error('[send-to-managers] background:', err.message));
             });
             return;
@@ -1858,6 +1878,7 @@ app.post('/api/send-to-managers', async (req, res) => {
             html,
             channels,
             testOnly,
+            whatsapp_campaign: whatsappCampaign,
         });
         res.json({ success: true, managers: managers.length, ...results });
     } catch (err) {
@@ -2237,8 +2258,9 @@ app.post('/api/send-to-clients', async (req, res) => {
     }
 });
 
-async function deliverToPromoteur(prom, { message, subject, html, channels, results }) {
+async function deliverToPromoteur(prom, { message, subject, html, channels, results, whatsapp_campaign }) {
     const mailSubject = subject || 'Message Boxing Center';
+    const waBody = personalizeOutboundMessage(message, prom.nom);
     const tasks = [];
 
     if (channels.includes('whatsapp')) {
@@ -2248,7 +2270,23 @@ async function deliverToPromoteur(prom, { message, subject, html, channels, resu
                 return;
             }
             try {
-                await sendWhatsAppMessage(prom.telephone, message, null, prom.id);
+                const sent = await sendWhatsAppMessage(
+                    prom.telephone,
+                    waBody,
+                    null,
+                    prom.id,
+                    null,
+                    null,
+                    whatsapp_campaign || null
+                );
+                if (sent.skipped) {
+                    if (sent.duplicate) {
+                        results.whatsapp.duplicates = (results.whatsapp.duplicates || 0) + 1;
+                    } else {
+                        results.whatsapp.skipped++;
+                    }
+                    return;
+                }
                 results.whatsapp.sent++;
                 results.destinations.push({
                     channel: 'whatsapp',
@@ -2302,7 +2340,7 @@ async function deliverToPromoteur(prom, { message, subject, html, channels, resu
                 return;
             }
             try {
-                await sendSmsMessage(prom.telephone, message, null, prom.id);
+                await sendSmsMessage(prom.telephone, waBody, null, prom.id);
                 results.sms.sent++;
                 results.destinations.push({
                     channel: 'sms',
@@ -2319,6 +2357,20 @@ async function deliverToPromoteur(prom, { message, subject, html, channels, resu
     await Promise.all(tasks);
 }
 
+async function deliverPromoteursBatch(promoteurs, { message, subject, html, channels, testOnly, whatsapp_campaign }) {
+    const results = {
+        whatsapp: { sent: 0, failed: 0, skipped: 0, duplicates: 0 },
+        email: { sent: 0, failed: 0, skipped: 0 },
+        sms: { sent: 0, failed: 0, skipped: 0 },
+        errors: [],
+        destinations: [],
+        warnings: [],
+    };
+    const ctx = { message, subject, html, channels, results, whatsapp_campaign };
+    await runBulkDelivery(promoteurs, deliverToPromoteur, ctx, { testOnly });
+    return results;
+}
+
 app.post('/api/send-to-promoteurs', async (req, res) => {
     if (!verifyApiSecret(req, res)) return;
     const {
@@ -2329,6 +2381,7 @@ app.post('/api/send-to-promoteurs', async (req, res) => {
         channels = ['whatsapp'],
         test_only: testOnly,
         broadcast,
+        whatsapp_campaign: whatsappCampaign,
     } = req.body;
 
     if (!message) return res.status(400).json({ error: 'message required' });
@@ -2338,6 +2391,22 @@ app.post('/api/send-to-promoteurs', async (req, res) => {
     if (rejectWhatsAppIfDisconnected(channels, res)) return;
 
     try {
+        if (!testOnly) {
+            const dedupKey = bulkSendDedupKey('promoteurs', req.body);
+            if (!registerBulkSend(dedupKey)) {
+                return res.json({
+                    success: true,
+                    duplicate: true,
+                    promoteurs: 0,
+                    whatsapp: { sent: 0, failed: 0, skipped: 0, duplicates: 0 },
+                    email: { sent: 0, failed: 0, skipped: 0 },
+                    errors: [],
+                    destinations: [],
+                    warnings: ['Envoi identique ignoré (déjà lancé il y a moins de 15 min).'],
+                });
+            }
+        }
+
         let promoteurs = [];
         if (testOnly) {
             const test = await fetchTestPromoteur();
