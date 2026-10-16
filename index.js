@@ -117,6 +117,7 @@ const enfantsCampaign = require('./enfantsCampaign');
 const seanceOfferteEmail = require('./seanceOfferteEmail');
 const seanceOfferteReviens = require('./seanceOfferteReviens');
 const seanceOfferteSport2000 = require('./seanceOfferteSport2000');
+const stageAdherentsMail = require('./stageAdherentsMail');
 
 const TEST_TARGET_PHONE = getTestSendPhone();
 const TEST_TARGET_EMAIL = getTestSendEmail();
@@ -2873,6 +2874,53 @@ app.post('/api/campaign/sport2000-email/test', async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message || String(err) });
     }
+});
+
+app.post('/api/campaign/stage-adherents-email/upload', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const body = req.body || {};
+    try {
+        const up = stageAdherentsMail.uploadMembres({
+            csv_b64: body.csv_b64 || body.csv,
+            xls_b64: body.xls_b64 || body.xls,
+        });
+        if (!up.ok) {
+            return res.status(400).json({ error: 'csv et xls requis', ...up });
+        }
+        res.json({ success: true, ...up });
+    } catch (err) {
+        res.status(500).json({ error: err.message || String(err) });
+    }
+});
+
+app.get('/api/campaign/stage-adherents-email', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    res.json({ success: true, ...stageAdherentsMail.status() });
+});
+
+app.delete('/api/campaign/stage-adherents-email', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    res.json({ success: true, ...stageAdherentsMail.stop() });
+});
+
+app.post('/api/campaign/stage-adherents-email', (req, res) => {
+    if (!verifyApiSecret(req, res)) return;
+    const body = req.body || {};
+    const started = stageAdherentsMail.start({
+        now: body.now !== false,
+        start: body.start || process.env.CAMPAIGN_START || '15:30',
+        end: body.end || process.env.CAMPAIGN_END || '17:30',
+        force: Boolean(body.force),
+    });
+    if (!started.ok) {
+        return res.status(400).json({ error: started.error || 'impossible de démarrer', ...started });
+    }
+    res.json({
+        success: true,
+        accepted: true,
+        note: 'Stage vacances adhérents — Brevo David, reply boxingcentertls, lien ?src=mail.',
+        ...started,
+    });
 });
 
 app.listen(PORT, () => {
