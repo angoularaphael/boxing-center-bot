@@ -669,11 +669,19 @@ async function sendWhatsAppMessage(
     });
     try {
         const jid = `${cleanNumber}@s.whatsapp.net`;
-        const logo = await getMenuLogoBuffer();
+        const skipLogo = Boolean(campaign) || process.env.WHATSAPP_CAMPAIGN_TEXT_ONLY === '1';
+        const logo = skipLogo ? null : await getMenuLogoBuffer();
         let waMessageId = null;
         if (logo && fullMessage.length <= WA_CAPTION_MAX) {
-            const sent = await sock.sendMessage(jid, { image: logo, caption: fullMessage });
-            waMessageId = sent?.key?.id || null;
+            try {
+                const sent = await sock.sendMessage(jid, { image: logo, caption: fullMessage });
+                waMessageId = sent?.key?.id || null;
+            } catch (imgErr) {
+                const msg = String(imgErr?.message || imgErr);
+                console.warn(`[BOT] Image WA échouée (+${cleanNumber}), envoi texte : ${msg}`);
+                const sent = await sock.sendMessage(jid, { text: fullMessage });
+                waMessageId = sent?.key?.id || null;
+            }
         } else if (fullMessage.length <= WA_MAX_LEN) {
             const sent = await sock.sendMessage(jid, { text: fullMessage });
             waMessageId = sent?.key?.id || null;
@@ -1612,6 +1620,16 @@ const WA_BULK_DELAY_MS = Math.max(
 const WA_BULK_DELAY_JITTER_MS = Math.max(0, Number(process.env.WA_BULK_DELAY_JITTER_MS) || 30_000);
 const waBulkSendTimestamps = [];
 
+/** Un seul lot WA volumineux à la fois (managers + promoteurs ne se marchent pas dessus). */
+let bulkWhatsAppDeliveryChain = Promise.resolve();
+function queueBulkWhatsAppDelivery(work) {
+    const run = bulkWhatsAppDeliveryChain.then(() => work());
+    bulkWhatsAppDeliveryChain = run.catch((err) => {
+        console.error('[BOT] Campagne WA background:', err.message);
+    });
+    return run;
+}
+
 function pruneWaBulkTimestamps() {
     const cutoff = Date.now() - WA_BULK_WINDOW_MS;
     while (waBulkSendTimestamps.length && waBulkSendTimestamps[0] < cutoff) {
@@ -1862,14 +1880,16 @@ app.post('/api/send-to-managers', async (req, res) => {
                 warnings: [`Envoi WhatsApp démarré pour ${waTargets} numéro(s) — ~1 min entre chaque pour éviter le blocage.`],
             });
             setImmediate(() => {
-                deliverManagersBatch(managers, {
-                    message,
-                    subject,
-                    html,
-                    channels,
-                    testOnly,
-                    whatsapp_campaign: whatsappCampaign,
-                }).catch((err) => console.error('[send-to-managers] background:', err.message));
+                queueBulkWhatsAppDelivery(() =>
+                    deliverManagersBatch(managers, {
+                        message,
+                        subject,
+                        html,
+                        channels,
+                        testOnly,
+                        whatsapp_campaign: whatsappCampaign,
+                    })
+                );
             });
             return;
         }
@@ -2139,46 +2159,42 @@ app.post('/api/send-to-clients', async (req, res) => {
             });
 
             setImmediate(() => {
-                (async () => {
+                queueBulkWhatsAppDelivery(async () => {
                     if (!isConnected || !sock) {
                         console.error('[send-to-clients] background annulé : WhatsApp non connecté');
                         return;
                     }
-                    try {
-                        let clients = await resolveClientsForSend({
-                            clientIds,
-                            testOnly: false,
-                            broadcast,
-                        });
-                        if (offreEteWhatsapp) {
-                            clients = await filterClientsForCampaignWhatsApp(clients, true);
-                        }
-                        if (!clients.length) {
-                            console.log('[send-to-clients] background annulé : aucun nouveau destinataire');
-                            return;
-                        }
-                        console.log(
-                            `[send-to-clients] background démarré — ${clients.length} client(s), WA connecté`
-                        );
-                        const results = await deliverClientsBatch(clients, {
-                            message,
-                            subject,
-                            html,
-                            channels,
-                            testOnly: false,
-                            offreEteWhatsapp,
-                            campaignKind,
-                            maxWhatsappSends,
-                        });
-                        console.log(
-                            `[send-to-clients] background terminé — WA envoyés: ${results.whatsapp.sent}, ` +
-                                `doublons: ${results.whatsapp.duplicates || 0}, ` +
-                                `échecs: ${results.whatsapp.failed}, ignorés: ${results.whatsapp.skipped}`
-                        );
-                    } catch (err) {
-                        console.error('[send-to-clients] background:', err.message);
+                    let clients = await resolveClientsForSend({
+                        clientIds,
+                        testOnly: false,
+                        broadcast,
+                    });
+                    if (offreEteWhatsapp) {
+                        clients = await filterClientsForCampaignWhatsApp(clients, true);
                     }
-                })();
+                    if (!clients.length) {
+                        console.log('[send-to-clients] background annulé : aucun nouveau destinataire');
+                        return;
+                    }
+                    console.log(
+                        `[send-to-clients] background démarré — ${clients.length} client(s), WA connecté`
+                    );
+                    const results = await deliverClientsBatch(clients, {
+                        message,
+                        subject,
+                        html,
+                        channels,
+                        testOnly: false,
+                        offreEteWhatsapp,
+                        campaignKind,
+                        maxWhatsappSends,
+                    });
+                    console.log(
+                        `[send-to-clients] background terminé — WA envoyés: ${results.whatsapp.sent}, ` +
+                            `doublons: ${results.whatsapp.duplicates || 0}, ` +
+                            `échecs: ${results.whatsapp.failed}, ignorés: ${results.whatsapp.skipped}`
+                    );
+                });
             });
             return;
         }
@@ -2222,24 +2238,23 @@ app.post('/api/send-to-clients', async (req, res) => {
                 ],
             });
             setImmediate(() => {
-                deliverClientsBatch(clients, {
-                    message,
-                    subject,
-                    html,
-                    channels,
-                    testOnly,
-                    offreEteWhatsapp,
-                    campaignKind,
-                    maxWhatsappSends,
-                })
-                    .then((results) => {
-                        console.log(
-                            `[send-to-clients] background terminé — WA envoyés: ${results.whatsapp.sent}, ` +
-                                `doublons: ${results.whatsapp.duplicates || 0}, ` +
-                                `échecs: ${results.whatsapp.failed}, ignorés: ${results.whatsapp.skipped}`
-                        );
-                    })
-                    .catch((err) => console.error('[send-to-clients] background:', err.message));
+                queueBulkWhatsAppDelivery(async () => {
+                    const results = await deliverClientsBatch(clients, {
+                        message,
+                        subject,
+                        html,
+                        channels,
+                        testOnly,
+                        offreEteWhatsapp,
+                        campaignKind,
+                        maxWhatsappSends,
+                    });
+                    console.log(
+                        `[send-to-clients] background terminé — WA envoyés: ${results.whatsapp.sent}, ` +
+                            `doublons: ${results.whatsapp.duplicates || 0}, ` +
+                            `échecs: ${results.whatsapp.failed}, ignorés: ${results.whatsapp.skipped}`
+                    );
+                });
             });
             return;
         }
@@ -2468,14 +2483,16 @@ app.post('/api/send-to-promoteurs', async (req, res) => {
                 ],
             });
             setImmediate(() => {
-                deliverPromoteursBatch(promoteurs, {
-                    message,
-                    subject,
-                    html,
-                    channels,
-                    testOnly,
-                    whatsapp_campaign: whatsappCampaign,
-                }).catch((err) => console.error('[send-to-promoteurs] background:', err.message));
+                queueBulkWhatsAppDelivery(() =>
+                    deliverPromoteursBatch(promoteurs, {
+                        message,
+                        subject,
+                        html,
+                        channels,
+                        testOnly,
+                        whatsapp_campaign: whatsappCampaign,
+                    })
+                );
             });
             return;
         }
