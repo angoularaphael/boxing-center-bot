@@ -1607,17 +1607,17 @@ const { personalizeOutboundMessage } = require('./lib/messagePersonalize');
 const RECENT_BULK_SENDS = new Map();
 const BULK_SEND_DEDUP_MS = 15 * 60 * 1000;
 
-/** Espacement envois WhatsApp — limite blocage anti-spam (~24 h). */
-const WA_BULK_WINDOW_MS = Math.max(60_000, Number(process.env.WA_BULK_WINDOW_MS) || 30 * 60 * 1000);
+/** Espacement envois WhatsApp — defaut 6 / min (fenetre 1 min, ~10 s entre envois). */
+const WA_BULK_WINDOW_MS = Math.max(60_000, Number(process.env.WA_BULK_WINDOW_MS) || 60_000);
 const WA_BULK_MAX_PER_WINDOW = Math.max(
     1,
-    Number(process.env.WA_BULK_MAX_PER_WINDOW || process.env.WA_BULK_MAX_PER_HOUR || 12)
+    Number(process.env.WA_BULK_MAX_PER_WINDOW || process.env.WA_BULK_MAX_PER_HOUR || 6)
 );
 const WA_BULK_DELAY_MS = Math.max(
-    15_000,
+    8_000,
     Number(process.env.WA_BULK_DELAY_MS) || Math.floor(WA_BULK_WINDOW_MS / WA_BULK_MAX_PER_WINDOW)
 );
-const WA_BULK_DELAY_JITTER_MS = Math.max(0, Number(process.env.WA_BULK_DELAY_JITTER_MS) || 30_000);
+const WA_BULK_DELAY_JITTER_MS = Math.max(0, Number(process.env.WA_BULK_DELAY_JITTER_MS) || 5_000);
 const waBulkSendTimestamps = [];
 
 /** Un seul lot WA volumineux à la fois (managers + promoteurs ne se marchent pas dessus). */
@@ -2795,7 +2795,7 @@ app.post('/api/campaign/offres-two-from', (req, res) => {
     if (!verifyApiSecret(req, res)) return;
     const body = req.body || {};
     const started = offresTwoFromEmail.start({
-        resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+        resendApiKey: body.brevo_api_key || body.resend_api_key || process.env.BREVO_API_KEY,
         slice: body.slice || body.half,
         recipients: body.recipients,
         campaign1: body.campaign1,
@@ -2810,7 +2810,7 @@ app.post('/api/campaign/offres-two-from', (req, res) => {
         accepted: true,
         note:
             started.campaign1 === 'offres_distrix_from1'
-                ? 'Distrix — 1 personne reçoit 2 mails David (29 € / 259 €), texte brut Resend.'
+                ? 'Distrix — 1 personne reçoit 2 mails David (29 € / 259 €), texte brut Brevo.'
                 : started.slice === 'second'
                 ? '2e moitié hors Balma — 1 personne reçoit 2 mails (David de Boxing Center, puis David 12 s plus tard).'
                 : '1re moitié hors Balma — 1 personne reçoit 2 mails (David de Boxing Center, puis David 12 s plus tard).',
@@ -2846,7 +2846,7 @@ app.post('/api/campaign/balma-david', (req, res) => {
     if (!verifyApiSecret(req, res)) return;
     const body = req.body || {};
     const started = balmaDavidCampaign.start({
-        resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+        resendApiKey: body.brevo_api_key || body.resend_api_key || process.env.BREVO_API_KEY,
     });
     if (!started.ok) {
         return res.status(400).json({ error: started.error || 'impossible de démarrer' });
@@ -2868,7 +2868,7 @@ app.post('/api/campaign/enfants-email', (req, res) => {
     if (!verifyApiSecret(req, res)) return;
     const body = req.body || {};
     const started = enfantsCampaign.start({
-        resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+        resendApiKey: body.brevo_api_key || body.resend_api_key || process.env.BREVO_API_KEY,
     });
     if (!started.ok) {
         return res.status(400).json({ error: started.error || 'impossible de démarrer' });
@@ -2895,7 +2895,7 @@ app.post('/api/campaign/seance-offerte-email', (req, res) => {
     if (!verifyApiSecret(req, res)) return;
     const body = req.body || {};
     const started = seanceOfferteEmail.start({
-        resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+        resendApiKey: body.brevo_api_key || body.resend_api_key || process.env.BREVO_API_KEY,
         recipients: body.recipients,
         waveSize: body.wave_size,
         resendAll: body.resend === true || body.resend_all === true,
@@ -2927,7 +2927,7 @@ app.post('/api/campaign/seance-offerte-reviens', (req, res) => {
     if (!verifyApiSecret(req, res)) return;
     const body = req.body || {};
     const started = seanceOfferteReviens.start({
-        resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+        resendApiKey: body.brevo_api_key || body.resend_api_key || process.env.BREVO_API_KEY,
         slice: body.slice || body.half,
         force: Boolean(body.force),
     });
@@ -2956,7 +2956,7 @@ app.post('/api/campaign/sport2000-email', (req, res) => {
     if (!verifyApiSecret(req, res)) return;
     const body = req.body || {};
     const started = seanceOfferteSport2000.start({
-        resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+        resendApiKey: body.brevo_api_key || body.resend_api_key || process.env.BREVO_API_KEY,
         recipients: body.recipients,
         waveSize: body.wave_size,
         resendAll: body.resend === true || body.resend_all === true,
@@ -2979,7 +2979,7 @@ app.post('/api/campaign/sport2000-email/test', async (req, res) => {
     const body = req.body || {};
     try {
         const result = await seanceOfferteSport2000.sendTest({
-            resendApiKey: body.resend_api_key || process.env.RESEND_API_KEY,
+            resendApiKey: body.brevo_api_key || body.resend_api_key || process.env.BREVO_API_KEY,
             to: body.to || body.email,
             prenom: body.prenom,
             nom: body.nom,
@@ -3046,10 +3046,10 @@ app.listen(PORT, () => {
     logBotUrlForVercel(PORT);
     startConcoursWaRetry();
     const autostartOffres = String(process.env.OFFRES_TWO_FROM_AUTOSTART || '').trim() === '1';
-    if (autostartOffres && String(process.env.RESEND_API_KEY || '').trim()) {
+    if (autostartOffres && String(process.env.BREVO_API_KEY || '').trim()) {
         setTimeout(() => {
             const started = offresTwoFromEmail.start({
-                resendApiKey: process.env.RESEND_API_KEY,
+                resendApiKey: process.env.BREVO_API_KEY,
             });
             console.log('[offres-two-from] autostart', started.alreadyRunning ? 'already' : started.ok ? 'queued' : started.error);
         }, 8000);
